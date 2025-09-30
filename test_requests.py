@@ -58,10 +58,7 @@ def test_meal_suggestion():
                     "polyunsaturated": 2, "omega3": 0.5, "omega6": 1.5, "cholesterol": 5
                 }
             },
-            "micronutrients": [
-                {"name": "Protein", "amount": 12, "unit": "g"},
-                {"name": "Fiber", "amount": 5, "unit": "g"}
-            ]
+            "micronutrients": []
         },
         {
             "mealName": "Greek yogurt",
@@ -80,10 +77,7 @@ def test_meal_suggestion():
                     "polyunsaturated": 0.5, "omega3": 0, "omega6": 0.5, "cholesterol": 15
                 }
             },
-            "micronutrients": [
-                {"name": "Protein", "amount": 20, "unit": "g"},
-                {"name": "Calcium", "amount": 200, "unit": "mg"}
-            ]
+            "micronutrients": []
         }
     ]
     
@@ -108,58 +102,222 @@ def test_meal_suggestion():
         print(f"Request failed: {e}")
 
 def test_transcription_analysis():
-    """Test the transcription analysis endpoint."""
+    """Test the transcription analysis endpoint with comprehensive test cases."""
     print("\n\n📝 Testing Transcription Analysis Endpoint")
     print("=" * 50)
     
-    test_transcriptions = [
-        "I had oatmeal with berries for breakfast",
-        "For lunch I had grilled chicken with rice, then I ate a Greek yogurt for snack",
-        "I started with a protein shake, then had pasta with marinara sauce and meatballs, finished with tiramisu for dessert"
+    test_cases = [
+        {
+            "name": "Single meal - simple",
+            "transcription": "I had oatmeal with berries for breakfast",
+            "expected_meals": 1
+        },
+        {
+            "name": "Multiple meals with 'then'",
+            "transcription": "For lunch I had grilled chicken with rice, then I ate a Greek yogurt for snack",
+            "expected_meals": 2
+        },
+        {
+            "name": "Three-course meal",
+            "transcription": "I started with a protein shake, then had pasta with marinara sauce and meatballs, finished with tiramisu for dessert",
+            "expected_meals": 3
+        },
+        {
+            "name": "Complex multi-meal day",
+            "transcription": "Breakfast was pancakes with syrup. Later I had a sandwich for lunch. In the evening I ate steak with vegetables, then had ice cream for dessert",
+            "expected_meals": 4
+        },
+        {
+            "name": "Snack sequence",
+            "transcription": "I grabbed some nuts, then later had an apple, and finally ate a granola bar",
+            "expected_meals": 3
+        },
+        {
+            "name": "Beverage + food combinations",
+            "transcription": "I had coffee and a croissant for breakfast, then pizza and soda for lunch",
+            "expected_meals": 2
+        },
+        {
+            "name": "Time-based meals",
+            "transcription": "This morning I had eggs. At noon I ate a salad. Tonight I'm having fish",
+            "expected_meals": 3
+        },
+        {
+            "name": "Single complex meal",
+            "transcription": "I had a big breakfast with eggs, bacon, toast, orange juice, and coffee",
+            "expected_meals": 1
+        }
     ]
     
-    for i, transcription in enumerate(test_transcriptions, 1):
-        print(f"\n{i}. Testing transcription: '{transcription}'")
+    for i, test_case in enumerate(test_cases, 1):
+        print(f"\n{i}. {test_case['name']}")
+        print(f"   Input: '{test_case['transcription']}'")
         
-        request_data = {"transcription": transcription}
+        request_data = {"transcription": test_case["transcription"]}
         
         try:
             response = requests.post(f"{BASE_URL}/analyze-transcription", json=request_data)
-            print(f"Status: {response.status_code}")
+            print(f"   Status: {response.status_code}")
+            
             if response.status_code == 200:
                 data = response.json()
-                print(f"Number of meals detected: {len(data)}")
+                actual_meals = len(data)
+                expected_meals = test_case["expected_meals"]
+                
+                print(f"   Expected meals: {expected_meals}, Actual meals: {actual_meals}")
+                
+                if actual_meals == expected_meals:
+                    print("   ✅ Meal count matches expectation")
+                else:
+                    print("   ⚠️  Meal count differs from expectation")
+                
                 for j, meal in enumerate(data, 1):
-                    print(f"  Meal {j}: {meal['mealName']} - {meal['macros']['protein']}g protein, {meal['macros']['calories']} calories")
+                    print(f"   Meal {j}: {meal['mealName']}")
+                    print(f"     - Protein: {meal['macros']['protein']}g")
+                    print(f"     - Calories: {meal['macros']['calories']}")
+                    print(f"     - Category: {meal.get('category', 'N/A')}")
+                    print(f"     - Micronutrients: {len(meal['micronutrients'])} items")
+                    
+                    # Use comprehensive validation
+                    validate_meal_output(meal, f"transcription meal {j}")
             else:
-                print(f"Error: {response.text}")
+                print(f"   ❌ Error: {response.text}")
         except Exception as e:
-            print(f"Request failed: {e}")
+            print(f"   ❌ Request failed: {e}")
 
 def test_image_analysis():
-    """Test the image analysis endpoint (requires a real image URL)."""
+    """Test the image analysis endpoint with various food images."""
     print("\n\n📸 Testing Image Analysis Endpoint")
     print("=" * 50)
     
-    # You can replace this with a real food image URL
-    test_image_url = "https://images.unsplash.com/photo-1565299624946-b28f40a0ca4b?w=500&h=500&fit=crop"
+    test_images = [
+        {
+            "name": "Hamburger and french fries",
+            "url": "https://cdn.britannica.com/98/235798-050-3C3BA15D/Hamburger-and-french-fries-paper-box.jpg",
+            "expected_meals": 2
+        },
+        {
+            "name": "Masala Dosa",
+            "url": "https://blog.swiggy.com/wp-content/uploads/2024/02/Masala-Dosa-1024x538.jpg",
+            "expected_meals": 1
+        },
+        {
+            "name": "Chicken pot pie soup",
+            "url": "https://hips.hearstapps.com/hmg-prod/images/comfort-food-recipes-chicken-pot-pie-soup-66d9e96824766.jpg",
+            "expected_meals": 1
+        },
+        {
+            "name": "Spicy chicken",
+            "url": "https://static01.nyt.com/images/2021/03/16/multimedia/00xp-spicy1/00xp-spicy1-mediumSquareAt3X.jpg",
+            "expected_meals": 1
+        },
+        {
+            "name": "Indian cuisine",
+            "url": "https://www.contiki.com/six-two/app/uploads/2024/03/IMG-20240318-WA0007-e1710844435378.jpg",
+            "expected_meals": 1
+        }
+    ]
     
-    print(f"Testing with image URL: {test_image_url}")
+    for i, test_image in enumerate(test_images, 1):
+        print(f"\n{i}. {test_image['name']}")
+        print(f"   URL: {test_image['url']}")
+        
+        request_data = {"image_url": test_image["url"]}
+        
+        try:
+            response = requests.post(f"{BASE_URL}/analyze-image", json=request_data)
+            print(f"   Status: {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                actual_meals = len(data)
+                expected_meals = test_image["expected_meals"]
+                
+                print(f"   Expected meals: {expected_meals}, Actual meals: {actual_meals}")
+                
+                if actual_meals >= 1:
+                    print("   ✅ At least one meal detected")
+                else:
+                    print("   ⚠️  No meals detected")
+                
+                for j, meal in enumerate(data, 1):
+                    print(f"   Meal {j}: {meal['mealName']}")
+                    print(f"     - Protein: {meal['macros']['protein']}g")
+                    print(f"     - Calories: {meal['macros']['calories']}")
+                    print(f"     - Serving: {meal['servingSize']['qty']} {meal['servingSize']['unit']} ({meal['servingSize']['grams']}g)")
+                    print(f"     - Ingredients: {meal['ingredients'][:100]}...")
+                    print(f"     - Micronutrients: {len(meal['micronutrients'])} items")
+                    
+                    # Use comprehensive validation
+                    validate_meal_output(meal, f"image meal {j}")
+            else:
+                print(f"   ❌ Error: {response.text}")
+        except Exception as e:
+            print(f"   ❌ Request failed: {e}")
+
+def validate_meal_output(meal_data, test_name):
+    """Validate meal output structure and content."""
+    print(f"   Validating {test_name}...")
     
-    request_data = {"image_url": test_image_url}
+    # Check required fields
+    required_fields = ["mealName", "servingSize", "ingredients", "macros", "micronutrients"]
+    missing_fields = [field for field in required_fields if field not in meal_data]
     
+    if missing_fields:
+        print(f"     ❌ Missing required fields: {missing_fields}")
+        return False
+    else:
+        print(f"     ✅ All required fields present")
+    
+    # Check micronutrients is empty array
+    if meal_data["micronutrients"] != []:
+        print(f"     ❌ Micronutrients should be empty array, got: {meal_data['micronutrients']}")
+        return False
+    else:
+        print(f"     ✅ Micronutrients correctly empty")
+    
+    # Check macros structure
+    macros = meal_data["macros"]
+    macro_fields = ["calories", "protein", "carbohydrates", "fat"]
+    missing_macro_fields = [field for field in macro_fields if field not in macros]
+    
+    if missing_macro_fields:
+        print(f"     ❌ Missing macro fields: {missing_macro_fields}")
+        return False
+    else:
+        print(f"     ✅ All macro fields present")
+    
+    # Check serving size structure
+    serving_size = meal_data["servingSize"]
+    serving_fields = ["qty", "unit", "grams"]
+    missing_serving_fields = [field for field in serving_fields if field not in serving_size]
+    
+    if missing_serving_fields:
+        print(f"     ❌ Missing serving size fields: {missing_serving_fields}")
+        return False
+    else:
+        print(f"     ✅ All serving size fields present")
+    
+    # Check data types
     try:
-        response = requests.post(f"{BASE_URL}/analyze-image", json=request_data)
-        print(f"Status: {response.status_code}")
-        if response.status_code == 200:
-            data = response.json()
-            print(f"Number of meals detected: {len(data)}")
-            for i, meal in enumerate(data, 1):
-                print(f"  Meal {i}: {meal['mealName']} - {meal['macros']['protein']}g protein, {meal['macros']['calories']} calories")
-        else:
-            print(f"Error: {response.text}")
-    except Exception as e:
-        print(f"Request failed: {e}")
+        assert isinstance(macros["calories"], (int, float)), "Calories should be number"
+        assert isinstance(macros["protein"], (int, float)), "Protein should be number"
+        assert isinstance(serving_size["qty"], int), "Quantity should be integer"
+        assert isinstance(serving_size["grams"], int), "Grams should be integer"
+        print(f"     ✅ Data types are correct")
+    except AssertionError as e:
+        print(f"     ❌ Data type validation failed: {e}")
+        return False
+    
+    # Check reasonable values
+    if macros["calories"] <= 0:
+        print(f"     ⚠️  Calories should be positive, got: {macros['calories']}")
+    if macros["protein"] < 0:
+        print(f"     ⚠️  Protein should be non-negative, got: {macros['protein']}")
+    if serving_size["grams"] <= 0:
+        print(f"     ⚠️  Grams should be positive, got: {serving_size['grams']}")
+    
+    return True
 
 def test_api_health():
     """Test if the API is running."""
