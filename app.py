@@ -460,7 +460,7 @@ ANALYSIS PROCESS:
 1. Calculate total protein consumed from today's meals
 2. Determine remaining protein needed to reach the daily goal
 3. Suggest a specific, realistic meal that provides the needed protein
-4. Provide reasoning for the suggestion
+4. Return the suggestion in the SAME format as transcription analysis
 
 SUGGESTION CRITERIA:
 - Suggest meals that are realistic and commonly available
@@ -470,34 +470,71 @@ SUGGESTION CRITERIA:
 - Consider the time of day and meal type appropriateness
 
 OUTPUT FORMAT (STRICT):
-Return ONLY a JSON object with these exact keys:
+Return ONLY a JSON ARRAY with ONE meal object (same format as transcription analysis):
 ```json
-{
-  "suggested_meal": "Specific meal name with portion (e.g., 'Grilled chicken breast with quinoa and steamed broccoli - 6oz chicken, 1 cup quinoa, 1 cup broccoli')",
-  "estimated_protein": 35.0,
-  "estimated_calories": 450,
-  "reason": "Brief explanation of why this meal helps reach the protein goal",
-  "remaining_protein_needed": 25.0
-}
+[
+  {
+    "mealName": "Grilled chicken breast with quinoa and steamed broccoli",
+    "servingSize": {
+      "qty": 1,
+      "unit": "plate",
+      "grams": 400
+    },
+    "ingredients": "Grilled chicken breast (6oz), quinoa (1 cup cooked), steamed broccoli (1 cup)",
+    "category": "Poultry",
+    "macros": {
+      "calories": 450,
+      "protein": 45,
+      "carbohydrates": {
+        "total": 40,
+        "net": 35,
+        "fiber": 5,
+        "sugar": 3,
+        "addedSugar": 0,
+        "sugarAlcohols": 0,
+        "allulose": 0
+      },
+      "fat": {
+        "total": 10,
+        "saturated": 2,
+        "monounsaturated": 4,
+        "polyunsaturated": 2,
+        "omega3": 0.5,
+        "omega6": 1.5,
+        "cholesterol": 95
+      }
+    },
+    "micronutrients": []
+  }
+]
 ```
 
 IMPORTANT RULES:
+- Return a JSON ARRAY with ONE meal object
+- Use the EXACT same structure as transcription analysis
 - Be specific about portion sizes and cooking methods
 - Ensure the suggested meal is realistic and achievable
 - Focus on whole foods and balanced nutrition
-- Consider dietary preferences and common meal patterns
-- Provide accurate protein estimates based on typical serving sizes
+- Consider the time of day for meal appropriateness
+- Provide accurate estimates based on typical serving sizes
+- Include the "category" field
+- Keep micronutrients as empty array []
 """.strip()
 
 USER_PROMPT_MEAL_SUGGESTION = """
-TASK: Analyze my consumed meals and suggest a meal to reach my daily protein goal.
+TASK: Analyze my consumed meals and suggest ONE meal to help me reach my daily protein goal.
 
 DAILY PROTEIN GOAL: {daily_protein_goal}g
 
 TODAY'S CONSUMED MEALS:
 {todays_meals_summary}
 
-Please suggest a specific meal that will help me reach my protein goal. Be specific about portion sizes and provide realistic estimates.
+TOTAL PROTEIN CONSUMED SO FAR: {total_protein_consumed}g
+REMAINING PROTEIN NEEDED: {remaining_protein_needed}g
+
+Please suggest a specific meal that provides approximately {remaining_protein_needed}g of protein to help reach the daily goal.
+Be specific about portion sizes and provide realistic estimates.
+Return as a JSON ARRAY with ONE meal object using the exact same structure as transcription analysis.
 
 Current time context: {current_time}
 """.strip()
@@ -561,13 +598,6 @@ class TranscriptionRequest(BaseModel):
 class MealSuggestionRequest(BaseModel):
     todays_meals: List[MealTRANSCRIPTION]
     daily_protein_goal: float
-
-class MealSuggestion(BaseModel):
-    suggested_meal: str
-    estimated_protein: float
-    estimated_calories: float
-    reason: str
-    remaining_protein_needed: float
 
 # -------------------- HELPER FUNCTIONS --------------------
 def _extract_meals_from_content(content: str) -> List[Dict[str, Any]]:
@@ -781,8 +811,8 @@ def analyze_transcription(transcription: str) -> List[Dict[str, Any]]:
         logger.exception("API error or invalid response while analyzing transcription")
         raise HTTPException(status_code=500, detail=f"API error or invalid response: {str(e)}")
 
-def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: float) -> Dict[str, Any]:
-    """Suggest a meal to help reach daily protein goal."""
+def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: float) -> List[Dict[str, Any]]:
+    """Suggest a meal to help reach daily protein goal. Returns same structure as transcription analysis."""
     logger.info("Generating meal suggestion via OpenAI")
     
     # Calculate total protein consumed today
@@ -823,6 +853,8 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
                 "content": USER_PROMPT_MEAL_SUGGESTION.format(
                     daily_protein_goal=daily_protein_goal,
                     todays_meals_summary=todays_meals_text,
+                    total_protein_consumed=total_protein_consumed,
+                    remaining_protein_needed=remaining_protein,
                     current_time=time_context
                 )
             },
@@ -840,19 +872,9 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
             logger.error("OpenAI returned no content for meal suggestion. Refusal: %s", refusal_reason)
             raise HTTPException(status_code=400, detail=f"API refused to process: {refusal_reason}")
 
-        # Parse the JSON response
-        try:
-            suggestion = json.loads(content)
-            # Add the calculated remaining protein to the response
-            suggestion["remaining_protein_needed"] = remaining_protein
-            return suggestion
-        except json.JSONDecodeError:
-            # Try to extract JSON from the content if it's wrapped
-            meals = _extract_meals_from_content(content)
-            if meals and len(meals) > 0:
-                return meals[0]
-            else:
-                raise HTTPException(status_code=502, detail="Invalid JSON response from OpenAI")
+        # Use the same robust extractor as transcription to handle arrays/wrappers/codefences
+        meals = _extract_meals_from_content(content)
+        return meals
             
     except requests.exceptions.RequestException as e:
         logger.exception("HTTP call to OpenAI failed (meal suggestion)")
@@ -891,11 +913,11 @@ async def analyze_image_upload(file: UploadFile = File(...)):
         logger.exception("Error in /analyze-image-upload endpoint")
         raise HTTPException(status_code=500, detail=f"Error processing uploaded image: {str(e)}")
 
-@app.post("/suggest-meal", response_model=MealSuggestion)
+@app.post("/suggest-meal", response_model=List[MealTRANSCRIPTION])
 async def suggest_meal_endpoint(request: MealSuggestionRequest):
     try:
-        suggestion = suggest_meal(request.todays_meals, request.daily_protein_goal)
-        return suggestion
+        meals = suggest_meal(request.todays_meals, request.daily_protein_goal)
+        return meals
     except Exception as e:
         logger.exception("Error in /suggest-meal endpoint")
         raise HTTPException(status_code=500, detail=f"Error generating meal suggestion: {str(e)}")
