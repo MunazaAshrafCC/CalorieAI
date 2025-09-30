@@ -42,24 +42,33 @@ class TestMealSuggestion:
         }
         
         with patch('app.suggest_meal') as mock_suggest:
-            mock_suggest.return_value = {
-                "suggested_meal": "Grilled chicken breast with quinoa and steamed broccoli - 6oz chicken, 1 cup quinoa, 1 cup broccoli",
-                "estimated_protein": 45.0,
-                "estimated_calories": 500,
-                "reason": "This meal provides substantial protein to start your day and help reach your daily goal",
-                "remaining_protein_needed": 150.0
-            }
+            mock_suggest.return_value = [
+                {
+                    "mealName": "Grilled chicken breast with quinoa and steamed broccoli",
+                    "servingSize": {"qty": 1, "unit": "plate", "grams": 400},
+                    "ingredients": "Grilled chicken breast (6oz), quinoa (1 cup cooked), steamed broccoli (1 cup)",
+                    "category": "Poultry",
+                    "macros": {
+                        "calories": 500,
+                        "protein": 45,
+                        "carbohydrates": {"total": 40, "net": 35, "fiber": 5, "sugar": 3, "addedSugar": 0, "sugarAlcohols": 0, "allulose": 0},
+                        "fat": {"total": 10, "saturated": 2, "monounsaturated": 4, "polyunsaturated": 2, "omega3": 0.5, "omega6": 1.5, "cholesterol": 95}
+                    },
+                    "micronutrients": []
+                }
+            ]
             
             response = client.post("/suggest-meal", json=request_data)
             
             assert response.status_code == 200
             data = response.json()
-            assert "suggested_meal" in data
-            assert "estimated_protein" in data
-            assert "estimated_calories" in data
-            assert "reason" in data
-            assert "remaining_protein_needed" in data
-            assert data["remaining_protein_needed"] == 150.0
+            assert isinstance(data, list)
+            assert len(data) == 1
+            meal = data[0]
+            assert meal["mealName"] == "Grilled chicken breast with quinoa and steamed broccoli"
+            assert meal["macros"]["protein"] == 45
+            assert meal["macros"]["calories"] == 500
+            assert meal["micronutrients"] == []
     
     def test_suggest_meal_with_partial_protein_intake(self):
         """Test meal suggestion when some protein has been consumed."""
@@ -74,19 +83,30 @@ class TestMealSuggestion:
         }
         
         with patch('app.suggest_meal') as mock_suggest:
-            mock_suggest.return_value = {
-                "suggested_meal": "Grilled salmon with sweet potato and asparagus - 5oz salmon, 1 medium sweet potato, 1 cup asparagus",
-                "estimated_protein": 35.0,
-                "estimated_calories": 450,
-                "reason": "This meal provides high-quality protein to help you reach your remaining protein goal",
-                "remaining_protein_needed": 97.0
-            }
+            mock_suggest.return_value = [
+                {
+                    "mealName": "Grilled salmon with sweet potato and asparagus",
+                    "servingSize": {"qty": 1, "unit": "plate", "grams": 350},
+                    "ingredients": "Grilled salmon (5oz), sweet potato (1 medium), asparagus (1 cup)",
+                    "category": "Seafood",
+                    "macros": {
+                        "calories": 450,
+                        "protein": 35,
+                        "carbohydrates": {"total": 35, "net": 30, "fiber": 5, "sugar": 8, "addedSugar": 0, "sugarAlcohols": 0, "allulose": 0},
+                        "fat": {"total": 15, "saturated": 3, "monounsaturated": 6, "polyunsaturated": 4, "omega3": 2, "omega6": 2, "cholesterol": 60}
+                    },
+                    "micronutrients": []
+                }
+            ]
             
             response = client.post("/suggest-meal", json=request_data)
             
             assert response.status_code == 200
             data = response.json()
-            assert data["remaining_protein_needed"] == 97.0  # 120 - 23 (8+15)
+            assert isinstance(data, list)
+            assert len(data) == 1
+            meal = data[0]
+            assert meal["macros"]["protein"] == 35  # Remaining protein: 120 - 23 = 97
     
     def test_suggest_meal_protein_goal_already_met(self):
         """Test meal suggestion when protein goal is already met or exceeded."""
@@ -102,19 +122,30 @@ class TestMealSuggestion:
         }
         
         with patch('app.suggest_meal') as mock_suggest:
-            mock_suggest.return_value = {
-                "suggested_meal": "Light salad with mixed greens and vegetables - 2 cups mixed greens, 1 cup vegetables",
-                "estimated_protein": 5.0,
-                "estimated_calories": 100,
-                "reason": "You've already exceeded your protein goal, so a light, nutritious option is suggested",
-                "remaining_protein_needed": 0.0
-            }
+            mock_suggest.return_value = [
+                {
+                    "mealName": "Light salad with mixed greens and vegetables",
+                    "servingSize": {"qty": 1, "unit": "bowl", "grams": 200},
+                    "ingredients": "Mixed greens (2 cups), vegetables (1 cup), olive oil dressing",
+                    "category": "Vegetable",
+                    "macros": {
+                        "calories": 100,
+                        "protein": 5,
+                        "carbohydrates": {"total": 15, "net": 10, "fiber": 5, "sugar": 3, "addedSugar": 0, "sugarAlcohols": 0, "allulose": 0},
+                        "fat": {"total": 5, "saturated": 1, "monounsaturated": 3, "polyunsaturated": 1, "omega3": 0.2, "omega6": 0.8, "cholesterol": 0}
+                    },
+                    "micronutrients": []
+                }
+            ]
             
             response = client.post("/suggest-meal", json=request_data)
             
             assert response.status_code == 200
             data = response.json()
-            assert data["remaining_protein_needed"] == 0.0  # 80 - 90 (30+40+20) = 0
+            assert isinstance(data, list)
+            assert len(data) == 1
+            meal = data[0]
+            assert meal["macros"]["protein"] == 5  # Light meal since goal exceeded
     
     def test_suggest_meal_invalid_request(self):
         """Test meal suggestion with invalid request data."""
@@ -134,16 +165,26 @@ class TestMealSuggestion:
         }
         
         with patch('app.suggest_meal') as mock_suggest:
-            mock_suggest.return_value = {
-                "suggested_meal": "Light snack - mixed nuts",
-                "estimated_protein": 5.0,
-                "estimated_calories": 150,
-                "reason": "Light snack for the day",
-                "remaining_protein_needed": 0.0
-            }
+            mock_suggest.return_value = [
+                {
+                    "mealName": "Light snack - mixed nuts",
+                    "servingSize": {"qty": 1, "unit": "handful", "grams": 30},
+                    "ingredients": "Mixed nuts (almonds, cashews, walnuts)",
+                    "category": "Nut",
+                    "macros": {
+                        "calories": 150,
+                        "protein": 5,
+                        "carbohydrates": {"total": 8, "net": 6, "fiber": 2, "sugar": 2, "addedSugar": 0, "sugarAlcohols": 0, "allulose": 0},
+                        "fat": {"total": 12, "saturated": 1.5, "monounsaturated": 7, "polyunsaturated": 3, "omega3": 1, "omega6": 2, "cholesterol": 0}
+                    },
+                    "micronutrients": []
+                }
+            ]
             
             response = client.post("/suggest-meal", json=request_data)
             assert response.status_code == 200
+            data = response.json()
+            assert isinstance(data, list)
 
 class TestImageAnalysis:
     """Test cases for image analysis endpoints."""
@@ -399,14 +440,22 @@ class TestOutputValidation:
     
     @patch('app.suggest_meal')
     def test_meal_suggestion_output_structure(self, mock_suggest):
-        """Test that meal suggestion returns correct structure."""
-        mock_suggest.return_value = {
-            "suggested_meal": "Grilled chicken breast with quinoa and steamed broccoli - 6oz chicken, 1 cup quinoa, 1 cup broccoli",
-            "estimated_protein": 35.0,
-            "estimated_calories": 450,
-            "reason": "This meal provides high-quality protein to help you reach your remaining protein goal",
-            "remaining_protein_needed": 25.0
-        }
+        """Test that meal suggestion returns correct structure (same as transcription)."""
+        mock_suggest.return_value = [
+            {
+                "mealName": "Grilled chicken breast with quinoa and steamed broccoli",
+                "servingSize": {"qty": 1, "unit": "plate", "grams": 400},
+                "ingredients": "Grilled chicken breast (6oz), quinoa (1 cup cooked), steamed broccoli (1 cup)",
+                "category": "Poultry",
+                "macros": {
+                    "calories": 450,
+                    "protein": 35,
+                    "carbohydrates": {"total": 40, "net": 35, "fiber": 5, "sugar": 3, "addedSugar": 0, "sugarAlcohols": 0, "allulose": 0},
+                    "fat": {"total": 10, "saturated": 2, "monounsaturated": 4, "polyunsaturated": 2, "omega3": 0.5, "omega6": 1.5, "cholesterol": 95}
+                },
+                "micronutrients": []
+            }
+        ]
         
         request_data = {
             "todays_meals": [],
@@ -418,17 +467,23 @@ class TestOutputValidation:
         assert response.status_code == 200
         data = response.json()
         
-        # Check required fields exist
-        required_fields = ["suggested_meal", "estimated_protein", "estimated_calories", "reason", "remaining_protein_needed"]
+        # Check it's a list with one meal
+        assert isinstance(data, list)
+        assert len(data) == 1
+        
+        meal = data[0]
+        # Check required fields exist (same as transcription)
+        required_fields = ["mealName", "servingSize", "ingredients", "category", "macros", "micronutrients"]
         for field in required_fields:
-            assert field in data
+            assert field in meal
+        
+        # Check micronutrients is empty
+        assert meal["micronutrients"] == []
         
         # Check data types
-        assert isinstance(data["suggested_meal"], str)
-        assert isinstance(data["estimated_protein"], (int, float))
-        assert isinstance(data["estimated_calories"], (int, float))
-        assert isinstance(data["reason"], str)
-        assert isinstance(data["remaining_protein_needed"], (int, float))
+        assert isinstance(meal["mealName"], str)
+        assert isinstance(meal["macros"]["protein"], (int, float))
+        assert isinstance(meal["macros"]["calories"], (int, float))
     
     @patch('app.analyze_image')
     def test_multiple_meals_output_structure(self, mock_analyze):
@@ -478,7 +533,7 @@ class TestOutputValidation:
     
     def test_pydantic_model_validation(self):
         """Test that response data can be validated against Pydantic models."""
-        from app import MealIMAGE, MealTRANSCRIPTION, MealSuggestion, ServingSize, Macronutrients, Carbohydrates, Fat, Micronutrient
+        from app import MealIMAGE, MealTRANSCRIPTION, ServingSize, Macronutrients, Carbohydrates, Fat, Micronutrient
         
         # Test MealIMAGE model
         meal_image_data = {
@@ -520,19 +575,25 @@ class TestOutputValidation:
         assert meal_transcription.category == "Test"
         assert meal_transcription.micronutrients == []
         
-        # Test MealSuggestion model
+        # Test that meal suggestion uses same model as transcription
         meal_suggestion_data = {
-            "suggested_meal": "Test meal suggestion",
-            "estimated_protein": 30.0,
-            "estimated_calories": 400,
-            "reason": "Test reason",
-            "remaining_protein_needed": 20.0
+            "mealName": "Suggested Meal",
+            "servingSize": {"qty": 1, "unit": "plate", "grams": 400},
+            "ingredients": "Test suggestion ingredients",
+            "category": "Poultry",
+            "macros": {
+                "calories": 450,
+                "protein": 35,
+                "carbohydrates": {"total": 40, "net": 35, "fiber": 5, "sugar": 3, "addedSugar": 0, "sugarAlcohols": 0, "allulose": 0},
+                "fat": {"total": 10, "saturated": 2, "monounsaturated": 4, "polyunsaturated": 2, "omega3": 0.5, "omega6": 1.5, "cholesterol": 95}
+            },
+            "micronutrients": []
         }
         
-        # Should not raise validation error
-        meal_suggestion = MealSuggestion(**meal_suggestion_data)
-        assert meal_suggestion.suggested_meal == "Test meal suggestion"
-        assert meal_suggestion.estimated_protein == 30.0
+        # Should not raise validation error (uses MealTRANSCRIPTION model)
+        meal_suggestion = MealTRANSCRIPTION(**meal_suggestion_data)
+        assert meal_suggestion.mealName == "Suggested Meal"
+        assert meal_suggestion.macros.protein == 35
 
 class TestErrorHandling:
     """Test cases for error handling."""

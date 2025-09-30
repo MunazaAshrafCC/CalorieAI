@@ -28,11 +28,20 @@ def test_meal_suggestion():
         print(f"Status: {response.status_code}")
         if response.status_code == 200:
             data = response.json()
-            print(f"Suggested meal: {data['suggested_meal']}")
-            print(f"Estimated protein: {data['estimated_protein']}g")
-            print(f"Estimated calories: {data['estimated_calories']}")
-            print(f"Reason: {data['reason']}")
-            print(f"Remaining protein needed: {data['remaining_protein_needed']}g")
+            # Response is now an array of meal objects (like transcription)
+            if data and len(data) > 0:
+                meal = data[0]  # Get the first (and only) suggested meal
+                print(f"Suggested meal: {meal['mealName']}")
+                print(f"Serving size: {meal['servingSize']['qty']} {meal['servingSize']['unit']} ({meal['servingSize']['grams']}g)")
+                print(f"Category: {meal.get('category', 'N/A')}")
+                print(f"Protein: {meal['macros']['protein']}g")
+                print(f"Calories: {meal['macros']['calories']}")
+                print(f"Carbs: {meal['macros']['carbohydrates']['total']}g (net: {meal['macros']['carbohydrates']['net']}g)")
+                print(f"Fat: {meal['macros']['fat']['total']}g")
+                print(f"Ingredients: {meal['ingredients']}")
+                print(f"✅ Meal suggestion validated successfully")
+            else:
+                print("No meal suggestion returned")
         else:
             print(f"Error: {response.text}")
     except Exception as e:
@@ -91,11 +100,25 @@ def test_meal_suggestion():
         print(f"Status: {response.status_code}")
         if response.status_code == 200:
             data = response.json()
-            print(f"Suggested meal: {data['suggested_meal']}")
-            print(f"Estimated protein: {data['estimated_protein']}g")
-            print(f"Estimated calories: {data['estimated_calories']}")
-            print(f"Reason: {data['reason']}")
-            print(f"Remaining protein needed: {data['remaining_protein_needed']}g")
+            # Response is now an array of meal objects (like transcription)
+            if data and len(data) > 0:
+                meal = data[0]  # Get the first (and only) suggested meal
+                print(f"Suggested meal: {meal['mealName']}")
+                print(f"Serving size: {meal['servingSize']['qty']} {meal['servingSize']['unit']} ({meal['servingSize']['grams']}g)")
+                print(f"Category: {meal.get('category', 'N/A')}")
+                print(f"Protein: {meal['macros']['protein']}g")
+                print(f"Calories: {meal['macros']['calories']}")
+                print(f"Carbs: {meal['macros']['carbohydrates']['total']}g (net: {meal['macros']['carbohydrates']['net']}g)")
+                print(f"Fat: {meal['macros']['fat']['total']}g")
+                print(f"Ingredients: {meal['ingredients']}")
+                
+                # Calculate remaining protein
+                total_consumed = sum(m['macros']['protein'] for m in meals_data) if 'meals_data' in locals() else 0
+                remaining = 120.0 - total_consumed
+                print(f"Remaining protein needed: {remaining}g")
+                print(f"✅ Meal suggestion validated successfully")
+            else:
+                print("No meal suggestion returned")
         else:
             print(f"Error: {response.text}")
     except Exception as e:
