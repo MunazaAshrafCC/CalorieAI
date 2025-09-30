@@ -8,11 +8,15 @@ from logging.handlers import RotatingFileHandler
 import time
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from starlette.responses import Response
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Union, Optional
 from pydantic import BaseModel
 from typing import List, Dict, Any, cast
 from io import BytesIO
 from PIL import Image
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -61,10 +65,14 @@ async def log_requests(
         logger.exception(f"Unhandled error for {request.method} {request.url.path} after {duration_ms:.1f}ms")
         raise
 
-# Load OpenAI API Key from environment
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-API_URL = "https://api.openai.com/v1/chat/completions"
-MODEL = "gpt-4.1"  # Updated to latest model
+# Load configuration from environment variables
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+API_URL = os.getenv("API_URL", "https://api.openai.com/v1/chat/completions")
+MODEL = os.getenv("MODEL", "gpt-4.1")
+
+# Validate required environment variables
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY environment variable is required. Please set it in your .env file.")
 
 # -------------------- SYSTEM & USER PROMPTS --------------------
 
@@ -94,7 +102,7 @@ OUTPUT FORMAT (STRICT):
   • "servingSize": object (with qty, unit, grams)
   • "ingredients": string (list of ingredients in the meal)
   • "macros": object (includes calories, protein, carbohydrates, fat, etc.)
-  • "micronutrients": array (list of micronutrients with name, amount, unit)
+  • "micronutrients": array (empty array for now - skip micronutrient details)
 
 Detailed **macros** object must include:
   - calories: integer (calories per serving)
@@ -102,10 +110,8 @@ Detailed **macros** object must include:
   - carbohydrates: object (total carbs, net carbs, fiber, sugar, added sugar, sugar alcohols, allulose)
   - fat: object (total fat, saturated fat, monounsaturated fat, polyunsaturated fat, omega3, omega6, cholesterol)
 
-Detailed **micronutrients** array should include:
-  - name: string (e.g., "Vitamin C", "Iron", "Calcium")
-  - amount: integer (amount of the nutrient)
-  - unit: string (e.g., "mg", "g", "µg")
+**micronutrients** array should be empty for now (skip micronutrient details):
+  - Return empty array: []
 
 EXAMPLES OF OUTPUT:
 
@@ -141,38 +147,7 @@ EXAMPLES OF OUTPUT:
       "cholesterol": 0
     }
   },
-  "micronutrients": [
-    {
-      "name": "Protein",
-      "amount": 2,
-      "unit": "g",
-    },
-    {
-      "name": "Total Lipid (Fat)",
-      "amount": 10,
-      "unit": "g",
-    },
-    {
-      "name": "Energy",
-      "amount": 150,
-      "unit": "kcal",
-    },
-    {
-      "name": "Calcium, Ca",
-      "amount": 10,
-      "unit": "mg",
-    },
-    {
-      "name": "Iron, Fe",
-      "amount": 0.5,
-      "unit": "mg",
-    },
-    {
-      "name": "Potassium, K",
-      "amount": 380,
-      "unit": "mg",
-    }
-  ]
+  "micronutrients": []
 }
 ```
 
@@ -209,13 +184,7 @@ EXAMPLES OF OUTPUT:
         "cholesterol": 0
       }
     },
-    "micronutrients": [
-      {
-        "name": "Protein",
-        "amount": 2,
-        "unit": "g",
-      }
-    ]
+    "micronutrients": []
   },
   {
     "mealName": "Grilled Chicken Salad",
@@ -247,18 +216,7 @@ EXAMPLES OF OUTPUT:
         "cholesterol": 50
       }
     },
-    "micronutrients": [
-      {
-        "name": "Vitamin A",
-        "amount": 900,
-        "unit": "µg",
-      },
-      {
-        "name": "Calcium",
-        "amount": 150,
-        "unit": "mg",
-      }
-    ]
+    "micronutrients": []
   }
 ]
 ```
@@ -349,38 +307,7 @@ Each object must include exactly these keys with detailed structure:
       "cholesterol": 0
     }
   },
-  "micronutrients": [
-    {
-      "name": "Protein",
-      "amount": 2,
-      "unit": "g",
-    },
-    {
-      "name": "Total Lipid (Fat)",
-      "amount": 10,
-      "unit": "g",
-    },
-    {
-      "name": "Energy",
-      "amount": 150,
-      "unit": "kcal",
-    },
-    {
-      "name": "Calcium, Ca",
-      "amount": 10,
-      "unit": "mg",
-    },
-    {
-      "name": "Iron, Fe",
-      "amount": 0.5,
-      "unit": "mg",
-    },
-    {
-      "name": "Potassium, K",
-      "amount": 380,
-      "unit": "mg",
-    }
-  ]
+  "micronutrients": []
 }
 ```
 
@@ -418,13 +345,7 @@ Each object must include exactly these keys with detailed structure:
         "cholesterol": 0
       }
     },
-    "micronutrients": [
-      {
-        "name": "Protein",
-        "amount": 2,
-        "unit": "g",
-      }
-    ]
+    "micronutrients": []
   },
   {
     "mealName": "Grilled Chicken Salad",
@@ -457,18 +378,7 @@ Each object must include exactly these keys with detailed structure:
         "cholesterol": 50
       }
     },
-    "micronutrients": [
-      {
-        "name": "Vitamin A",
-        "amount": 900,
-        "unit": "µg",
-      },
-      {
-        "name": "Calcium",
-        "amount": 150,
-        "unit": "mg",
-      }
-    ]
+    "micronutrients": []
   }
 ]
 ```
@@ -481,7 +391,7 @@ IMPORTANT RULES:
 - Serving size should be realistic (e.g., "1 plate" for a full meal, "1 piece" for a snack)
 - Weight in grams should be estimated based on typical portions
 - Include category of the food/dish (Fruit, Vegetable, Meat, Beverage, Dairy, Grain, Nut, Poultry, Seafood, Legume, Snack, Dessert, Processed, Other)
-- Include at least 3-5 key micronutrients per meal
+- Skip micronutrient details for now (return empty array)
 
 BEHAVIORAL EXAMPLES:
 Input: "I had pasta, then I ate biryani" → 2 detailed objects.
@@ -510,7 +420,7 @@ OUTPUT:
 - Return only a JSON array with objects of the shape: { "mealName", "servingSize", "ingredients", "macros", "micronutrients" }.
 - Do not include wrapper keys or explanations.
 
-For single meal: [{"mealName": "Specific Name", "servingSize": {"qty": 1, "unit": "plate", "grams": 350}, "ingredients": "Main ingredients", "macros": {"calories": 500, "protein": 25, "carbohydrates": {"total": 45, "net": 40, "fiber": 5, "sugar": 8, "addedSugar": 2, "sugarAlcohols": 0, "allulose": 0}, "fat": {"total": 20, "saturated": 5, "monounsaturated": 8, "polyunsaturated": 4, "omega3": 1, "omega6": 3, "cholesterol": 30}}, "micronutrients": [{"name": "Protein", "amount": 25, "unit": "g"}, {"name": "Fiber", "amount": 5, "unit": "g"}]}]
+For single meal: [{"mealName": "Specific Name", "servingSize": {"qty": 1, "unit": "plate", "grams": 350}, "ingredients": "Main ingredients", "macros": {"calories": 500, "protein": 25, "carbohydrates": {"total": 45, "net": 40, "fiber": 5, "sugar": 8, "addedSugar": 2, "sugarAlcohols": 0, "allulose": 0}, "fat": {"total": 20, "saturated": 5, "monounsaturated": 8, "polyunsaturated": 4, "omega3": 1, "omega6": 3, "cholesterol": 30}}, "micronutrients": []}]
 
 For multiple meals: [
   {
@@ -519,7 +429,7 @@ For multiple meals: [
     "ingredients": "Ingredients for meal 1",
     "category": "Category of the food/dish (Fruit, Vegetable, Meat, Beverage, Dairy, Grain, Nut, Poultry, Seafood, Legume, Snack, Dessert, Processed, Other)",
     "macros": {"calories": 400, "protein": 20, "carbohydrates": {"total": 35, "net": 30, "fiber": 5, "sugar": 5, "addedSugar": 0, "sugarAlcohols": 0, "allulose": 0}, "fat": {"total": 18, "saturated": 4, "monounsaturated": 7, "polyunsaturated": 3, "omega3": 1, "omega6": 2, "cholesterol": 25}},
-    "micronutrients": [{"name": "Protein", "amount": 20, "unit": "g"}]
+    "micronutrients": []
   },
   {
     "mealName": "Meal 2 Name",
@@ -527,7 +437,7 @@ For multiple meals: [
     "ingredients": "Ingredients for meal 2",
     "category": "Category of the food/dish (Fruit, Vegetable, Meat, Beverage, Dairy, Grain, Nut, Poultry, Seafood, Legume, Snack, Dessert, Processed, Other)",
     "macros": {"calories": 350, "protein": 18, "carbohydrates": {"total": 30, "net": 25, "fiber": 5, "sugar": 4, "addedSugar": 0, "sugarAlcohols": 0, "allulose": 0}, "fat": {"total": 15, "saturated": 3, "monounsaturated": 6, "polyunsaturated": 2, "omega3": 1, "omega6": 1, "cholesterol": 20}},
-    "micronutrients": [{"name": "Protein", "amount": 18, "unit": "g"}]
+    "micronutrients": []
   }
 ]
 
@@ -539,6 +449,57 @@ HARD RULES:
 
 Food description to analyze:
 {transcription}
+""".strip()
+
+SYSTEM_PROMPT_MEAL_SUGGESTION = """
+You are a **nutritional meal suggestion AI** that helps users reach their daily protein goals.
+
+PRIMARY TASK: Analyze the user's consumed meals for the day and suggest a specific meal that will help them reach their daily protein goal.
+
+ANALYSIS PROCESS:
+1. Calculate total protein consumed from today's meals
+2. Determine remaining protein needed to reach the daily goal
+3. Suggest a specific, realistic meal that provides the needed protein
+4. Provide reasoning for the suggestion
+
+SUGGESTION CRITERIA:
+- Suggest meals that are realistic and commonly available
+- Consider variety and balance (not just protein)
+- Provide specific portion sizes
+- Include estimated protein and calorie content
+- Consider the time of day and meal type appropriateness
+
+OUTPUT FORMAT (STRICT):
+Return ONLY a JSON object with these exact keys:
+```json
+{
+  "suggested_meal": "Specific meal name with portion (e.g., 'Grilled chicken breast with quinoa and steamed broccoli - 6oz chicken, 1 cup quinoa, 1 cup broccoli')",
+  "estimated_protein": 35.0,
+  "estimated_calories": 450,
+  "reason": "Brief explanation of why this meal helps reach the protein goal",
+  "remaining_protein_needed": 25.0
+}
+```
+
+IMPORTANT RULES:
+- Be specific about portion sizes and cooking methods
+- Ensure the suggested meal is realistic and achievable
+- Focus on whole foods and balanced nutrition
+- Consider dietary preferences and common meal patterns
+- Provide accurate protein estimates based on typical serving sizes
+""".strip()
+
+USER_PROMPT_MEAL_SUGGESTION = """
+TASK: Analyze my consumed meals and suggest a meal to reach my daily protein goal.
+
+DAILY PROTEIN GOAL: {daily_protein_goal}g
+
+TODAY'S CONSUMED MEALS:
+{todays_meals_summary}
+
+Please suggest a specific meal that will help me reach my protein goal. Be specific about portion sizes and provide realistic estimates.
+
+Current time context: {current_time}
 """.strip()
 
 # -------------------- JSON MODELS --------------------
@@ -596,6 +557,17 @@ class ImageAnalysisRequest(BaseModel):
 
 class TranscriptionRequest(BaseModel):
     transcription: str
+
+class MealSuggestionRequest(BaseModel):
+    todays_meals: List[MealTRANSCRIPTION]
+    daily_protein_goal: float
+
+class MealSuggestion(BaseModel):
+    suggested_meal: str
+    estimated_protein: float
+    estimated_calories: float
+    reason: str
+    remaining_protein_needed: float
 
 # -------------------- HELPER FUNCTIONS --------------------
 def _extract_meals_from_content(content: str) -> List[Dict[str, Any]]:
@@ -680,7 +652,7 @@ def _image_part(image_url: str) -> Dict[str, Any]:
     return {"type": "image_url", "image_url": {"url": image_url}}
 
 
-def _compress_image_to_data_url(image_bytes: bytes, preferred_mime: str | None) -> str:
+def _compress_image_to_data_url(image_bytes: bytes, preferred_mime: Optional[str]) -> str:
     """Compress the uploaded image to reduce payload size and return as data URL."""
     try:
         with Image.open(BytesIO(image_bytes)) as img:
@@ -690,7 +662,7 @@ def _compress_image_to_data_url(image_bytes: bytes, preferred_mime: str | None) 
             w, h = img.size
             if max(w, h) > max_dim:
                 scale: float = max_dim / float(max(w, h))
-                new_size: tuple[int, int] = (int(w * scale), int(h * scale))
+                new_size: tuple = (int(w * scale), int(h * scale))
                 img = cast(Any, img).resize(new_size)
 
             buf = BytesIO()
@@ -733,7 +705,7 @@ def analyze_image(image_url: str) -> List[Dict[str, Any]]:
         ],
     }
 
-    resp: requests.Response | None = None
+    resp: Optional[requests.Response] = None
     for attempt, delay in enumerate((0.0, 1.0, 2.0), start=1):
         try:
             resp = requests.post(API_URL, headers=headers, json=data, timeout=60)
@@ -809,6 +781,86 @@ def analyze_transcription(transcription: str) -> List[Dict[str, Any]]:
         logger.exception("API error or invalid response while analyzing transcription")
         raise HTTPException(status_code=500, detail=f"API error or invalid response: {str(e)}")
 
+def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: float) -> Dict[str, Any]:
+    """Suggest a meal to help reach daily protein goal."""
+    logger.info("Generating meal suggestion via OpenAI")
+    
+    # Calculate total protein consumed today
+    total_protein_consumed = sum(meal.macros.protein for meal in todays_meals)
+    remaining_protein = max(0, daily_protein_goal - total_protein_consumed)
+    
+    # Create summary of today's meals
+    meals_summary = []
+    for i, meal in enumerate(todays_meals, 1):
+        meals_summary.append(f"{i}. {meal.mealName} - {meal.macros.protein}g protein, {meal.macros.calories} calories")
+    
+    todays_meals_text = "\n".join(meals_summary) if meals_summary else "No meals consumed today"
+    
+    # Get current time context
+    from datetime import datetime
+    current_hour = datetime.now().hour
+    if current_hour < 11:
+        time_context = "morning (breakfast/snack time)"
+    elif current_hour < 15:
+        time_context = "afternoon (lunch time)"
+    elif current_hour < 19:
+        time_context = "evening (dinner time)"
+    else:
+        time_context = "late evening (snack time)"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENAI_API_KEY}"
+    }
+    
+    payload = {
+        "model": MODEL,
+        "temperature": 0.3,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT_MEAL_SUGGESTION},
+            {
+                "role": "user", 
+                "content": USER_PROMPT_MEAL_SUGGESTION.format(
+                    daily_protein_goal=daily_protein_goal,
+                    todays_meals_summary=todays_meals_text,
+                    current_time=time_context
+                )
+            },
+        ],
+    }
+
+    try:
+        resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        
+        if content is None:
+            refusal_reason = data["choices"][0]["message"].get("refusal", "Unknown reason")
+            logger.error("OpenAI returned no content for meal suggestion. Refusal: %s", refusal_reason)
+            raise HTTPException(status_code=400, detail=f"API refused to process: {refusal_reason}")
+
+        # Parse the JSON response
+        try:
+            suggestion = json.loads(content)
+            # Add the calculated remaining protein to the response
+            suggestion["remaining_protein_needed"] = remaining_protein
+            return suggestion
+        except json.JSONDecodeError:
+            # Try to extract JSON from the content if it's wrapped
+            meals = _extract_meals_from_content(content)
+            if meals and len(meals) > 0:
+                return meals[0]
+            else:
+                raise HTTPException(status_code=502, detail="Invalid JSON response from OpenAI")
+            
+    except requests.exceptions.RequestException as e:
+        logger.exception("HTTP call to OpenAI failed (meal suggestion)")
+        raise HTTPException(status_code=502, detail="Upstream API request failed")
+    except Exception as e:
+        logger.exception("API error while generating meal suggestion")
+        raise HTTPException(status_code=500, detail=f"Error generating meal suggestion: {str(e)}")
+
 # -------------------- FastAPI Endpoints --------------------
 @app.post("/analyze-image", response_model=List[MealIMAGE])
 async def analyze_image_endpoint(request: ImageAnalysisRequest):
@@ -838,3 +890,12 @@ async def analyze_image_upload(file: UploadFile = File(...)):
     except Exception as e:
         logger.exception("Error in /analyze-image-upload endpoint")
         raise HTTPException(status_code=500, detail=f"Error processing uploaded image: {str(e)}")
+
+@app.post("/suggest-meal", response_model=MealSuggestion)
+async def suggest_meal_endpoint(request: MealSuggestionRequest):
+    try:
+        suggestion = suggest_meal(request.todays_meals, request.daily_protein_goal)
+        return suggestion
+    except Exception as e:
+        logger.exception("Error in /suggest-meal endpoint")
+        raise HTTPException(status_code=500, detail=f"Error generating meal suggestion: {str(e)}")
