@@ -454,33 +454,33 @@ Food description to analyze:
 SYSTEM_PROMPT_MEAL_SUGGESTION = """
 You are a **nutritional meal suggestion AI** that helps users reach their daily protein goals.
 
-PRIMARY TASK: Analyze the user's consumed meals for the day and suggest a specific meal that will help them reach their daily protein goal.
+PRIMARY TASK: Suggest a single meal that provides approximately one-third of the user's daily protein goal (since this is one meal out of ~3 meals per day).
 
 ANALYSIS PROCESS:
-1. Calculate total protein consumed from today's meals
-2. Determine remaining protein needed to reach the daily goal
-3. Suggest a specific, realistic meal that provides the needed protein
-4. Return the suggestion in the SAME format as transcription analysis
+1. The target protein for this meal is already calculated (daily goal ÷ 3)
+2. Suggest a specific, realistic meal that provides approximately that amount of protein
+3. Return the suggestion in the SAME format as transcription analysis
 
 SUGGESTION CRITERIA:
 - Suggest meals that are realistic and commonly available
 - Consider variety and balance (not just protein)
-- Provide specific portion sizes
+- Provide specific portion sizes IN GRAMS ONLY
 - Include estimated protein and calorie content
 - Consider the time of day and meal type appropriateness
+- Keep meal names SHORT (3-4 words maximum)
 
 OUTPUT FORMAT (STRICT):
 Return ONLY a JSON ARRAY with ONE meal object (same format as transcription analysis):
 ```json
 [
   {
-    "mealName": "Grilled chicken breast with quinoa and steamed broccoli",
+    "mealName": "Grilled Chicken Quinoa Bowl",
     "servingSize": {
       "qty": 1,
-      "unit": "plate",
+      "unit": "bowl",
       "grams": 400
     },
-    "ingredients": "Grilled chicken breast (6oz), quinoa (1 cup cooked), steamed broccoli (1 cup)",
+    "ingredients": "Grilled chicken breast (170g), quinoa (185g cooked), steamed broccoli (90g)",
     "category": "Poultry",
     "macros": {
       "calories": 450,
@@ -512,6 +512,10 @@ Return ONLY a JSON ARRAY with ONE meal object (same format as transcription anal
 IMPORTANT RULES:
 - Return a JSON ARRAY with ONE meal object
 - Use the EXACT same structure as transcription analysis
+- Keep meal names SHORT (3-4 words maximum) - examples: "Grilled Salmon Bowl", "Turkey Avocado Wrap", "Chicken Stir Fry"
+- ALL measurements in ingredients MUST be in GRAMS (e.g., "170g chicken", "100g rice", not "6oz" or "1 cup")
+- servingSize.unit should be simple (bowl, plate, wrap, sandwich, etc.)
+- servingSize.grams is the total weight of the meal
 - Be specific about portion sizes and cooking methods
 - Ensure the suggested meal is realistic and achievable
 - Focus on whole foods and balanced nutrition
@@ -522,19 +526,23 @@ IMPORTANT RULES:
 """.strip()
 
 USER_PROMPT_MEAL_SUGGESTION = """
-TASK: Analyze my consumed meals and suggest ONE meal to help me reach my daily protein goal.
+TASK: Suggest ONE meal that provides approximately one-third of my daily protein goal.
 
 DAILY PROTEIN GOAL: {daily_protein_goal}g
+TARGET PROTEIN FOR THIS MEAL: {target_protein_per_meal}g (daily goal ÷ 3)
 
 TODAY'S CONSUMED MEALS:
 {todays_meals_summary}
 
 TOTAL PROTEIN CONSUMED SO FAR: {total_protein_consumed}g
-REMAINING PROTEIN NEEDED: {remaining_protein_needed}g
 
-Please suggest a specific meal that provides approximately {remaining_protein_needed}g of protein to help reach the daily goal.
-Be specific about portion sizes and provide realistic estimates.
-Return as a JSON ARRAY with ONE meal object using the exact same structure as transcription analysis.
+Please suggest a specific meal that provides approximately {target_protein_per_meal}g of protein.
+CRITICAL REQUIREMENTS:
+- Keep meal name SHORT (3-4 words maximum)
+- Use ONLY GRAMS for all ingredient measurements (e.g., "170g chicken breast", "100g rice")
+- No ounces, cups, or other units - GRAMS ONLY
+- Be specific about portion sizes and cooking methods
+- Return as a JSON ARRAY with ONE meal object using the exact same structure as transcription analysis
 
 Current time context: {current_time}
 """.strip()
@@ -815,9 +823,11 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
     """Suggest a meal to help reach daily protein goal. Returns same structure as transcription analysis."""
     logger.info("Generating meal suggestion via OpenAI")
     
+    # Calculate target protein per meal (divide daily goal by 3)
+    target_protein_per_meal = round(daily_protein_goal / 3, 1)
+    
     # Calculate total protein consumed today
     total_protein_consumed = sum(meal.macros.protein for meal in todays_meals)
-    remaining_protein = max(0, daily_protein_goal - total_protein_consumed)
     
     # Create summary of today's meals
     meals_summary = []
@@ -852,9 +862,9 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
                 "role": "user", 
                 "content": USER_PROMPT_MEAL_SUGGESTION.format(
                     daily_protein_goal=daily_protein_goal,
+                    target_protein_per_meal=target_protein_per_meal,
                     todays_meals_summary=todays_meals_text,
                     total_protein_consumed=total_protein_consumed,
-                    remaining_protein_needed=remaining_protein,
                     current_time=time_context
                 )
             },
