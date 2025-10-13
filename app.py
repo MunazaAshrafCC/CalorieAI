@@ -92,6 +92,7 @@ NON-NEGOTIABLE RULES:
   • Visually separated panels/sections/collages (e.g., triptych)
   • Different cuisines placed together
   • Course progression (appetizer, main, dessert)
+  • Distinct individual items on the same tray/table (e.g., fries vs. coke)
 - NEVER stop after the first detected meal. If there is ANY visual separation or difference, create additional meal objects.
 - If uncertain, you MUST err on the side of creating MORE meal objects rather than fewer.
 
@@ -112,6 +113,13 @@ Detailed **macros** object must include:
 
 **micronutrients** array should be empty for now (skip micronutrient details):
   - Return empty array: []
+
+NUMERIC CONSISTENCY (CRITICAL):
+- Use 4-4-9 rule to compute calories: calories ≈ 4*(protein + carbohydrates.total) + 9*(fat.total)
+- Compute carbohydrates.net = max(total - fiber - sugarAlcohols - allulose, 0)
+- All numeric values must be non-negative and realistic; round calories to nearest integer, others to 1 decimal
+- Keep values in typical ranges: protein≤120g, carbs.total≤200g, fat.total≤120g for a single serving
+- Ensure sugar ≤ carbohydrates.total, fiber ≤ carbohydrates.total, saturated ≤ fat.total
 
 EXAMPLES OF OUTPUT:
 
@@ -235,6 +243,7 @@ PASS 1 — GLOBAL SCAN:
   • Visual boundaries (collage panels, triptychs, segmented layouts)
   • Portion differences and presentation (toppings, sauces, garnishes)
   • Course progression (appetizer, main, dessert)
+  • Distinct individual items (e.g., burger, fries, coke → three separate objects)
 
 PASS 2 — INDEPENDENT RE-CHECK:
 - Recount ALL distinct meals/dishes. Validate none are missed.
@@ -256,16 +265,17 @@ TWO PASSES (CRITICAL):
 1) Segmentation Pass: Identify every separate eating occasion using cues like "then", "and then", time markers, and course markers ("started with", "finished with").
 2) Validation Pass: Recount occasions and ensure the number of output objects equals the number of separate occasions detected. Never stop after the first.
 
-SEGMENTATION RULES (treat each as a separate meal):
+SEGMENTATION RULES (treat each as a separate meal/object):
 - Progression connectors: then, and then, later, finally, next
 - Additive events: also ate, also had
 - Course markers: started with, finished with
 - Named meals/times: breakfast, lunch, dinner, brunch, supper, snack, coffee break, or explicit different time/occasion
 - Phrasing clearly indicating separate occasions (e.g., "I grabbed X. During my break I had Y.")
+- Distinct individual items mentioned together (e.g., "burger, fries and a coke") must be returned as separate objects: one for burger, one for fries, one for coke.
 
 DO NOT SPLIT RULES:
-- Do NOT split items that are part of the same occasion/plate when connected by "and", "with", "plus", "alongside", commas, or semicolons, unless a clear progression/time cue is present ("then", "and then", "later", "next", "finally", "after", explicit clock time) or explicit course markers ("started with", "finished with").
-- Beverage + food in one sentence without time/progression cues counts as a single occasion (e.g., "cappuccino and a croissant", "pizza and a soda" → one object).
+- Do NOT split components that form a single composed dish (e.g., "pasta with marinara sauce and meatballs", "yogurt with granola") — treat as one object.
+- Split distinct side items and beverages into their own objects (e.g., "burger with fries and coke" → three objects: burger, fries, coke).
 
 Never merge multiple occasions into one. If 3 occasions are described, return 3 objects. If only one occasion is described, return 1 object.
 Iterate through the entire text and include **every** detected occasion.
@@ -392,6 +402,11 @@ IMPORTANT RULES:
 - Weight in grams should be estimated based on typical portions
 - Include category of the food/dish (Fruit, Vegetable, Meat, Beverage, Dairy, Grain, Nut, Poultry, Seafood, Legume, Snack, Dessert, Processed, Other)
 - Skip micronutrient details for now (return empty array)
+ - Numeric consistency (STRICT):
+   • Use 4-4-9 rule to approximate calories: calories ≈ 4*(protein + carbohydrates.total) + 9*(fat.total)
+   • Ensure carbohydrates.net = max(total - fiber - sugarAlcohols - allulose, 0)
+   • Round calories to nearest integer; other numbers to 1 decimal place
+   • Clamp negatives to 0; ensure sugar ≤ carbohydrates.total, fiber ≤ carbohydrates.total, saturated ≤ fat.total
 
 BEHAVIORAL EXAMPLES:
 Input: "I had pasta, then I ate biryani" → 2 detailed objects.
@@ -410,6 +425,7 @@ TASK: Analyze the following food description in TWO PASSES and return a JSON ARR
 
 PASS 1 — SEGMENTATION:
 - Identify every separate occasion using connectors (then, and then, later, finally, next), course markers (started with, finished with), and named meals/times.
+- Additionally, SPLIT distinct individual items even within a single occasion (e.g., "fries and a coke" → two objects; "burger, fries, coke" → three objects). Do not split components of a single composed dish (e.g., "pasta with marinara and meatballs").
 - If connectors like "then" are present (e.g., "X, then Y"), you MUST output two objects: one for X and one for Y.
 
 PASS 2 — VALIDATION:
@@ -417,10 +433,10 @@ PASS 2 — VALIDATION:
 - If uncertain, err on the side of MORE objects.
 
 OUTPUT:
-- Return only a JSON array with objects of the shape: { "mealName", "servingSize", "ingredients", "macros", "micronutrients" }.
+- Return only a JSON array with objects of the shape: { "mealName", "servingSize", "ingredients", "category", "macros", "micronutrients" }.
 - Do not include wrapper keys or explanations.
 
-For single meal: [{"mealName": "Specific Name", "servingSize": {"qty": 1, "unit": "plate", "grams": 350}, "ingredients": "Main ingredients", "macros": {"calories": 500, "protein": 25, "carbohydrates": {"total": 45, "net": 40, "fiber": 5, "sugar": 8, "addedSugar": 2, "sugarAlcohols": 0, "allulose": 0}, "fat": {"total": 20, "saturated": 5, "monounsaturated": 8, "polyunsaturated": 4, "omega3": 1, "omega6": 3, "cholesterol": 30}}, "micronutrients": []}]
+For single meal: [{"mealName": "Specific Name", "servingSize": {"qty": 1, "unit": "plate", "grams": 350}, "ingredients": "Main ingredients", "category": "Snack", "macros": {"calories": 500, "protein": 25, "carbohydrates": {"total": 45, "net": 40, "fiber": 5, "sugar": 8, "addedSugar": 2, "sugarAlcohols": 0, "allulose": 0}, "fat": {"total": 20, "saturated": 5, "monounsaturated": 8, "polyunsaturated": 4, "omega3": 1, "omega6": 3, "cholesterol": 30}}, "micronutrients": []}]
 
 For multiple meals: [
   {
@@ -454,33 +470,35 @@ Food description to analyze:
 SYSTEM_PROMPT_MEAL_SUGGESTION = """
 You are a **nutritional meal suggestion AI** that helps users reach their daily protein goals.
 
-PRIMARY TASK: Suggest a single meal that provides approximately one-third of the user's daily protein goal (since this is one meal out of ~3 meals per day).
+PRIMARY TASK: Suggest a single meal targeted to the user's remaining protein goal for the day, adjusted for time of day (breakfast/lunch/dinner/snack) and remaining meals.
 
 ANALYSIS PROCESS:
-1. The target protein for this meal is already calculated (daily goal ÷ 3)
-2. Suggest a specific, realistic meal that provides approximately that amount of protein
-3. Return the suggestion in the SAME format as transcription analysis
+1. The app provides: daily protein goal, total protein consumed so far, remaining protein, estimated meals remaining today, and a computed target for this meal.
+2. Suggest a specific, realistic meal that provides approximately the computed target protein for this meal.
+3. Return the suggestion in the SAME format as transcription analysis.
 
 SUGGESTION CRITERIA:
+- Keep meal names VERY SHORT (2-3 words if possible; max 4)
+- Use full-weight serving sizes: servingSize.grams should equal the typical total weight of the meal (e.g., a 200g burger → 200g serving)
 - Suggest meals that are realistic and commonly available
 - Consider variety and balance (not just protein)
 - Provide specific portion sizes IN GRAMS ONLY
 - Include estimated protein and calorie content
 - Consider the time of day and meal type appropriateness
-- Keep meal names SHORT (3-4 words maximum)
+- Encourage novelty: avoid repeating the same meal names as earlier in the day; propose a new or slightly different meal each time
 
 OUTPUT FORMAT (STRICT):
 Return ONLY a JSON ARRAY with ONE meal object (same format as transcription analysis):
 ```json
 [
   {
-    "mealName": "Grilled Chicken Quinoa Bowl",
+    "mealName": "Chicken quinoa",
     "servingSize": {
       "qty": 1,
       "unit": "bowl",
       "grams": 400
     },
-    "ingredients": "Grilled chicken breast (170g), quinoa (185g cooked), steamed broccoli (90g)",
+    "ingredients": "Grilled chicken breast (170g), quinoa cooked (185g), broccoli steamed (90g)",
     "category": "Poultry",
     "macros": {
       "calories": 450,
@@ -512,10 +530,10 @@ Return ONLY a JSON ARRAY with ONE meal object (same format as transcription anal
 IMPORTANT RULES:
 - Return a JSON ARRAY with ONE meal object
 - Use the EXACT same structure as transcription analysis
-- Keep meal names SHORT (3-4 words maximum) - examples: "Grilled Salmon Bowl", "Turkey Avocado Wrap", "Chicken Stir Fry"
+- Keep meal names as short as possible (2-4 words) - examples: "Salmon bowl", "Turkey wrap", "Chicken stir-fry"
 - ALL measurements in ingredients MUST be in GRAMS (e.g., "170g chicken", "100g rice", not "6oz" or "1 cup")
 - servingSize.unit should be simple (bowl, plate, wrap, sandwich, etc.)
-- servingSize.grams is the total weight of the meal
+- servingSize.grams is the total weight of the meal (full weight, not per component)
 - Be specific about portion sizes and cooking methods
 - Ensure the suggested meal is realistic and achievable
 - Focus on whole foods and balanced nutrition
@@ -523,25 +541,32 @@ IMPORTANT RULES:
 - Provide accurate estimates based on typical serving sizes
 - Include the "category" field
 - Keep micronutrients as empty array []
+ - Numeric consistency (STRICT):
+   • Use 4-4-9 rule to approximate calories: calories ≈ 4*(protein + carbohydrates.total) + 9*(fat.total)
+   • Ensure carbohydrates.net = max(total - fiber - sugarAlcohols - allulose, 0)
+   • Round calories to nearest integer; other numbers to 1 decimal place
+   • Clamp negatives to 0; ensure sugar ≤ carbohydrates.total, fiber ≤ carbohydrates.total, saturated ≤ fat.total
 """.strip()
 
 USER_PROMPT_MEAL_SUGGESTION = """
-TASK: Suggest ONE meal that provides approximately one-third of my daily protein goal.
+TASK: Suggest ONE meal that matches the computed protein target for this meal.
 
 DAILY PROTEIN GOAL: {daily_protein_goal}g
-TARGET PROTEIN FOR THIS MEAL: {target_protein_per_meal}g (daily goal ÷ 3)
+TOTAL PROTEIN CONSUMED SO FAR: {total_protein_consumed}g
+REMAINING PROTEIN TODAY: {remaining_protein}g
+ESTIMATED MEALS REMAINING TODAY: {meals_remaining}
+TARGET PROTEIN FOR THIS MEAL: {target_protein_for_this_meal}g
 
 TODAY'S CONSUMED MEALS:
 {todays_meals_summary}
 
-TOTAL PROTEIN CONSUMED SO FAR: {total_protein_consumed}g
-
-Please suggest a specific meal that provides approximately {target_protein_per_meal}g of protein.
 CRITICAL REQUIREMENTS:
-- Keep meal name SHORT (3-4 words maximum)
+- Keep meal name as short as possible (2-4 words)
 - Use ONLY GRAMS for all ingredient measurements (e.g., "170g chicken breast", "100g rice")
 - No ounces, cups, or other units - GRAMS ONLY
+- Use full-weight serving sizes: servingSize.grams equals the typical total weight of the meal
 - Be specific about portion sizes and cooking methods
+- Provide a new or slightly different suggestion than earlier today
 - Return as a JSON ARRAY with ONE meal object using the exact same structure as transcription analysis
 
 Current time context: {current_time}
@@ -685,6 +710,111 @@ def _extract_meals_from_content(content: str) -> List[Dict[str, Any]]:
     # If everything fails, surface a helpful error with a snippet
     snippet = text[:300].replace("\n", " ")
     raise HTTPException(status_code=502, detail=f"Malformed or non-JSON content from OpenAI: {snippet}...")
+def _safe_num(x: Any, decimals: int = 1, non_negative: bool = True) -> float:
+    try:
+        val = float(x)
+    except Exception:
+        return 0.0
+    if non_negative and val < 0:
+        val = 0.0
+    if decimals is None:
+        return val
+    return round(val, decimals)
+
+def _recompute_calories(protein: float, carbs_total: float, fat_total: float) -> int:
+    cals = 4.0 * (protein + carbs_total) + 9.0 * fat_total
+    return int(round(cals))
+
+def _normalize_meal(meal: Dict[str, Any]) -> Dict[str, Any]:
+    m = dict(meal)
+    macros = m.get("macros") or {}
+    carbs = macros.get("carbohydrates") or {}
+    fat = macros.get("fat") or {}
+
+    # Normalize individual numbers
+    protein = _safe_num(macros.get("protein"), 1)
+    carbs_total = _safe_num(carbs.get("total"), 1)
+    fiber = _safe_num(carbs.get("fiber"), 1)
+    sugar = _safe_num(carbs.get("sugar"), 1)
+    addedSugar = _safe_num(carbs.get("addedSugar"), 1)
+    sugarAlcohols = _safe_num(carbs.get("sugarAlcohols"), 1)
+    allulose = _safe_num(carbs.get("allulose"), 1)
+    fat_total = _safe_num(fat.get("total"), 1)
+    saturated = _safe_num(fat.get("saturated"), 1)
+    monounsaturated = _safe_num(fat.get("monounsaturated"), 1)
+    polyunsaturated = _safe_num(fat.get("polyunsaturated"), 1)
+    omega3 = _safe_num(fat.get("omega3"), 1)
+    omega6 = _safe_num(fat.get("omega6"), 1)
+    cholesterol = _safe_num(fat.get("cholesterol"), 1)
+
+    # Logical clamps
+    if sugar > carbs_total:
+        sugar = carbs_total
+    if fiber > carbs_total:
+        fiber = carbs_total
+    if saturated > fat_total:
+        saturated = fat_total
+
+    # Net carbs
+    net = carbs_total - fiber - sugarAlcohols - allulose
+    if net < 0:
+        net = 0.0
+    net = round(net, 1)
+
+    # Calories via 4/4/9
+    calories = _recompute_calories(protein, carbs_total, fat_total)
+
+    # Reassemble
+    macros_out = {
+        "calories": int(calories),
+        "protein": protein,
+        "carbohydrates": {
+            "total": carbs_total,
+            "net": net,
+            "fiber": fiber,
+            "sugar": sugar,
+            "addedSugar": addedSugar,
+            "sugarAlcohols": sugarAlcohols,
+            "allulose": allulose,
+        },
+        "fat": {
+            "total": fat_total,
+            "saturated": saturated,
+            "monounsaturated": monounsaturated,
+            "polyunsaturated": polyunsaturated,
+            "omega3": omega3,
+            "omega6": omega6,
+            "cholesterol": cholesterol,
+        },
+    }
+    m["macros"] = macros_out
+
+    # Serving normalization: ensure ints for qty/grams, keep unit
+    ss = m.get("servingSize") or {}
+    qty = ss.get("qty", 1)
+    grams = ss.get("grams", 0)
+    try:
+        qty = int(qty)
+    except Exception:
+        qty = 1
+    try:
+        grams = int(float(grams))
+    except Exception:
+        grams = 0
+    unit = ss.get("unit", "plate")
+    m["servingSize"] = {"qty": qty, "unit": unit, "grams": grams}
+
+    # Shorten meal name to 2-4 words when too long
+    name = (m.get("mealName") or "").strip()
+    if name:
+        words = name.split()
+        if len(words) > 4:
+            m["mealName"] = " ".join(words[:4])
+
+    return m
+
+def _normalize_meals(meals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [_normalize_meal(meal) for meal in meals]
 def _image_part(image_url: str) -> Dict[str, Any]:
     """Builds the image content part for the Chat Completions API."""
     return {"type": "image_url", "image_url": {"url": image_url}}
@@ -778,6 +908,7 @@ def analyze_image(image_url: str) -> List[Dict[str, Any]]:
 
     # Use robust extractor
     meals = _extract_meals_from_content(content)
+    meals = _normalize_meals(meals)
 
     return meals
 
@@ -813,6 +944,7 @@ def analyze_transcription(transcription: str) -> List[Dict[str, Any]]:
 
         # Use the same robust extractor as image to handle arrays/wrappers/codefences
         meals = _extract_meals_from_content(content)
+        meals = _normalize_meals(meals)
         return meals
             
     except Exception as e:
@@ -823,11 +955,9 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
     """Suggest a meal to help reach daily protein goal. Returns same structure as transcription analysis."""
     logger.info("Generating meal suggestion via OpenAI")
     
-    # Calculate target protein per meal (divide daily goal by 3)
-    target_protein_per_meal = round(daily_protein_goal / 3, 1)
-    
-    # Calculate total protein consumed today
+    # Calculate totals and remaining protein today
     total_protein_consumed = sum(meal.macros.protein for meal in todays_meals)
+    remaining_protein = max(daily_protein_goal - total_protein_consumed, 0)
     
     # Create summary of today's meals
     meals_summary = []
@@ -841,12 +971,22 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
     current_hour = datetime.now().hour
     if current_hour < 11:
         time_context = "morning (breakfast/snack time)"
+        meals_remaining = 3  # breakfast + lunch + dinner/snack remaining window
     elif current_hour < 15:
         time_context = "afternoon (lunch time)"
+        meals_remaining = 2  # lunch + dinner
     elif current_hour < 19:
         time_context = "evening (dinner time)"
+        meals_remaining = 1  # dinner
     else:
         time_context = "late evening (snack time)"
+        meals_remaining = 1  # snack/late meal
+
+    # Compute dynamic protein target for this meal
+    # Aim to distribute remaining protein across remaining meals, but clamp to reasonable bounds
+    base_target = remaining_protein / max(meals_remaining, 1)
+    # Clamp target between 15g and 60g
+    target_protein_for_this_meal = round(min(max(base_target, 15.0), 60.0), 1)
     
     headers = {
         "Content-Type": "application/json",
@@ -855,16 +995,19 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
     
     payload = {
         "model": MODEL,
-        "temperature": 0.3,
+        # Slightly higher temperature to encourage small variations while keeping structure
+        "temperature": 0.5,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT_MEAL_SUGGESTION},
             {
                 "role": "user", 
                 "content": USER_PROMPT_MEAL_SUGGESTION.format(
-                    daily_protein_goal=daily_protein_goal,
-                    target_protein_per_meal=target_protein_per_meal,
+                    daily_protein_goal=round(daily_protein_goal, 1),
+                    total_protein_consumed=round(total_protein_consumed, 1),
+                    remaining_protein=round(remaining_protein, 1),
+                    meals_remaining=meals_remaining,
+                    target_protein_for_this_meal=target_protein_for_this_meal,
                     todays_meals_summary=todays_meals_text,
-                    total_protein_consumed=total_protein_consumed,
                     current_time=time_context
                 )
             },
@@ -884,6 +1027,7 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
 
         # Use the same robust extractor as transcription to handle arrays/wrappers/codefences
         meals = _extract_meals_from_content(content)
+        meals = _normalize_meals(meals)
         return meals
             
     except requests.exceptions.RequestException as e:
