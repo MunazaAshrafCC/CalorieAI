@@ -10,7 +10,8 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from starlette.responses import Response
 from typing import Callable, Awaitable, Union, Optional
 from pydantic import BaseModel
-from typing import List, Dict, Any, cast
+from typing import List, Dict, Any, cast, Deque
+from collections import deque
 from io import BytesIO
 from PIL import Image
 from dotenv import load_dotenv
@@ -82,6 +83,21 @@ if not OPENAI_API_KEY:
 # -------------------- SIMPLE TTL LRU CACHE --------------------
 _cache_store: Dict[str, Any] = {}
 _cache_meta: Dict[str, float] = {}
+_recent_suggestions_window = int(os.getenv("RECENT_SUGGESTIONS_WINDOW", "20"))
+_recent_suggested_names: Deque[str] = deque(maxlen=_recent_suggestions_window)
+
+def _recent_names_lower() -> set:
+    try:
+        return {name.lower() for name in _recent_suggested_names if name}
+    except Exception:
+        return set()
+
+def _remember_suggested_name(name: str) -> None:
+    try:
+        if name:
+            _recent_suggested_names.append(str(name))
+    except Exception:
+        pass
 
 def _cache_get(key: str) -> Optional[Any]:
     now = time.time()
@@ -1082,11 +1098,29 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
         balanced_mode=str(balanced_mode).lower()
     )
 
-    # Inject a nonce to promote variety when non-deterministic; model must not echo it
+    # Build anti-repeat constraints from today's meals
+    consumed_names = [meal.mealName.strip() for meal in todays_meals if getattr(meal, 'mealName', None)]
+    consumed_names_lower = {name.lower() for name in consumed_names}
+    consumed_categories = [meal.category.strip() for meal in todays_meals if getattr(meal, 'category', None)]
+    consumed_categories_lower = {cat.lower() for cat in consumed_categories}
+    recent_names_lower = _recent_names_lower()
+    avoid_names_set = consumed_names_lower | recent_names_lower
+
+    # Inject a nonce and explicit diversity constraints when non-deterministic
     sm_deterministic = SUGGEST_MEAL_DETERMINISTIC
+    diversity_suffix = ""
     if not sm_deterministic:
         nonce = int(time.time() * 1000) % 1_000_000
-        user_prompt_rendered += f"\nVARIATION NONCE: {nonce} (do not include this in output)"
+        # Build avoid text from combined set (limit size for prompt brevity)
+        avoid_list = list({*consumed_names, *[n for n in _recent_suggested_names]})
+        avoid_names_txt = "; ".join(avoid_list[:20]) if avoid_list else ""
+        avoid_cats_txt = "; ".join(consumed_categories[:10]) if consumed_categories else ""
+        diversity_suffix = (
+            f"\nVARIATION NONCE: {nonce} (do not include this in output)" +
+            (f"\nDO NOT REPEAT any of today's meal names: {avoid_names_txt}" if avoid_names_txt else "") +
+            (f"\nPREFER a different category than: {avoid_cats_txt}" if avoid_cats_txt else "")
+        )
+        user_prompt_rendered += diversity_suffix
 
     # Cache only when deterministic to ensure repeatability; skip cache for variability
     cache_key = None
@@ -1097,60 +1131,110 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
             logger.info("Cache hit for suggest_meal")
             return cached
 
-    payload = {
-        "model": MODEL,
-        "temperature": 0 if sm_deterministic else 0.8,
-        "top_p": 1 if sm_deterministic else 0.95,
-        "seed": 23 if sm_deterministic else None,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT_MEAL_SUGGESTION},
-            {"role": "user", "content": user_prompt_rendered},
-        ],
-    }
-    logger.info(
-        "SuggestMeal params: deterministic=%s, temperature=%s, top_p=%s",
-        sm_deterministic,
-        payload["temperature"],
-        payload["top_p"],
-    )
+    # Try up to 3 attempts to avoid repeats, increasing variation slightly each time
+    max_attempts = 3
+    for attempt_idx in range(max_attempts):
+        temp = 0 if sm_deterministic else min(0.8 + 0.1 * attempt_idx, 1.0)
+        top_p = 1 if sm_deterministic else 0.95
+        # Refresh nonce and constraints each attempt to encourage a new sample
+        attempt_prompt = user_prompt_rendered
+        if not sm_deterministic:
+            nonce2 = (int(time.time() * 1000) + attempt_idx * 137) % 1_000_000
+            attempt_prompt = user_prompt_rendered + f"\nATTEMPT NONCE: {nonce2} (do not include this in output)"
 
-    try:
-        resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"]
-        
-        if content is None:
-            refusal_reason = data["choices"][0]["message"].get("refusal", "Unknown reason")
-            logger.error("OpenAI returned no content for meal suggestion. Refusal: %s", refusal_reason)
-            raise HTTPException(status_code=400, detail=f"API refused to process: {refusal_reason}")
+        payload = {
+            "model": MODEL,
+            "temperature": temp,
+            "top_p": top_p,
+            "seed": 23 if sm_deterministic else None,
+            "presence_penalty": 0.0 if sm_deterministic else 0.3,
+            "frequency_penalty": 0.0 if sm_deterministic else 0.5,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT_MEAL_SUGGESTION},
+                {"role": "user", "content": attempt_prompt},
+            ],
+        }
+        logger.info(
+            "SuggestMeal params: deterministic=%s, attempt=%s, temperature=%s, top_p=%s",
+            sm_deterministic,
+            attempt_idx + 1,
+            temp,
+            top_p,
+        )
 
-        # Use the same robust extractor as transcription to handle arrays/wrappers/codefences
-        meals = _extract_meals_from_content(content)
-        meals = _normalize_meals(meals)
-        # Log brief summary of first suggested meal
         try:
-            first = meals[0] if meals else None
-            if first:
-                macros = first.get("macros", {})
-                logger.info(
-                    "SuggestMeal result: %s | protein=%sg | calories=%s",
-                    first.get("mealName", "<unknown>"),
-                    macros.get("protein"),
-                    macros.get("calories"),
-                )
-        except Exception:
-            pass
-        if sm_deterministic and cache_key is not None:
-            _cache_set(cache_key, meals)
-        return meals
-            
-    except requests.exceptions.RequestException as e:
-        logger.exception("HTTP call to OpenAI failed (meal suggestion)")
-        raise HTTPException(status_code=502, detail="Upstream API request failed")
-    except Exception as e:
-        logger.exception("API error while generating meal suggestion")
-        raise HTTPException(status_code=500, detail=f"Error generating meal suggestion: {str(e)}")
+            resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            if content is None:
+                refusal_reason = data["choices"][0]["message"].get("refusal", "Unknown reason")
+                logger.error("OpenAI returned no content for meal suggestion. Refusal: %s", refusal_reason)
+                if attempt_idx == max_attempts - 1:
+                    raise HTTPException(status_code=400, detail=f"API refused to process: {refusal_reason}")
+                continue
+
+            meals = _extract_meals_from_content(content)
+            meals = _normalize_meals(meals)
+
+            # Reject if name repeats any avoided names (consumed today or recently suggested)
+            first_name = (meals[0].get("mealName", "") if meals else "").strip().lower()
+            if first_name and (first_name in avoid_names_set) and not sm_deterministic:
+                logger.info("SuggestMeal duplicate detected (%s), retrying...", first_name)
+                continue
+
+            # Log summary
+            try:
+                first = meals[0] if meals else None
+                if first:
+                    macros = first.get("macros", {})
+                    logger.info(
+                        "SuggestMeal result: %s | protein=%sg | calories=%s",
+                        first.get("mealName", "<unknown>"),
+                        macros.get("protein"),
+                        macros.get("calories"),
+                    )
+            except Exception:
+                pass
+
+            # Remember name to discourage immediate repeats across calls
+            try:
+                if first_name:
+                    _remember_suggested_name(first.get("mealName", ""))
+            except Exception:
+                pass
+
+            if sm_deterministic and cache_key is not None:
+                _cache_set(cache_key, meals)
+            return meals
+
+        except requests.exceptions.RequestException:
+            logger.exception("HTTP call to OpenAI failed (meal suggestion)")
+            if attempt_idx == max_attempts - 1:
+                raise HTTPException(status_code=502, detail="Upstream API request failed")
+            continue
+        except Exception as e:
+            logger.exception("API error while generating meal suggestion")
+            if attempt_idx == max_attempts - 1:
+                raise HTTPException(status_code=500, detail=f"Error generating meal suggestion: {str(e)}")
+            continue
+
+    # If all attempts fail, return a minimal balanced placeholder to avoid 500
+    return [
+        {
+            "mealName": "Balanced bowl",
+            "servingSize": {"qty": 1, "unit": "bowl", "grams": 400},
+            "ingredients": "Chicken breast (150g), brown rice (180g), broccoli (70g)",
+            "category": "Poultry",
+            "macros": {
+                "calories": 520,
+                "protein": 35.0,
+                "carbohydrates": {"total": 55.0, "net": 50.0, "fiber": 5.0, "sugar": 4.0, "addedSugar": 0.0, "sugarAlcohols": 0.0, "allulose": 0.0},
+                "fat": {"total": 12.0, "saturated": 3.0, "monounsaturated": 6.0, "polyunsaturated": 2.0, "omega3": 0.4, "omega6": 1.6, "cholesterol": 95.0}
+            },
+            "micronutrients": []
+        }
+    ]
 
 # -------------------- FastAPI Endpoints --------------------
 @app.post("/analyze-image", response_model=List[MealIMAGE])
