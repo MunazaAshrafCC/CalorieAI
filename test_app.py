@@ -627,3 +627,131 @@ class TestErrorHandling:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.ok = 200 <= status_code < 300
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if not self.ok:
+            raise Exception(f"HTTP {self.status_code}")
+
+
+class TestDeterminismAndCache:
+    def test_transcription_deterministic_and_cached(self, monkeypatch):
+        captured = []
+
+        def _post(url, headers=None, json=None, timeout=None):
+            captured.append(json)
+            # Return minimal valid array output
+            content = '[{"mealName":"Test Meal","servingSize":{"qty":1,"unit":"plate","grams":300},"ingredients":"X","category":"Other","macros":{"calories":123,"protein":10,"carbohydrates":{"total":20,"net":18,"fiber":2,"sugar":3,"addedSugar":0,"sugarAlcohols":0,"allulose":0},"fat":{"total":5,"saturated":1,"monounsaturated":2,"polyunsaturated":1,"omega3":0.2,"omega6":0.3,"cholesterol":0}},"micronutrients":[]}]'
+            return FakeResponse({"choices": [{"message": {"content": content}}]})
+
+        monkeypatch.setattr('app.requests.post', _post)
+
+        body = {"transcription": "I had oatmeal for breakfast"}
+        r1 = client.post("/analyze-transcription", json=body)
+        r2 = client.post("/analyze-transcription", json=body)
+
+        assert r1.status_code == 200 and r2.status_code == 200
+        assert r1.json() == r2.json()
+
+        # Only first call should hit upstream due to cache
+        assert len(captured) == 1
+        payload = captured[0]
+        assert payload["temperature"] == 0
+        assert payload["top_p"] == 1
+        assert payload.get("seed") is not None
+
+    def test_image_deterministic_payload(self, monkeypatch):
+        captured = []
+
+        def _post(url, headers=None, json=None, timeout=None):
+            captured.append(json)
+            content = '[{"mealName":"Test Image","servingSize":{"qty":1,"unit":"plate","grams":250},"ingredients":"X","macros":{"calories":111,"protein":9,"carbohydrates":{"total":15,"net":14,"fiber":1,"sugar":2,"addedSugar":0,"sugarAlcohols":0,"allulose":0},"fat":{"total":4,"saturated":1,"monounsaturated":2,"polyunsaturated":1,"omega3":0.1,"omega6":0.2,"cholesterol":0}},"micronutrients":[]}]'
+            return FakeResponse({"choices": [{"message": {"content": content}}]})
+
+        monkeypatch.setattr('app.requests.post', _post)
+
+        body = {"image_url": "https://example.com/test.jpg"}
+        r1 = client.post("/analyze-image", json=body)
+        r2 = client.post("/analyze-image", json=body)
+        assert r1.status_code == 200 and r2.status_code == 200
+        assert r1.json() == r2.json()
+
+        # Only one upstream call due to cache
+        assert len(captured) == 1
+        payload = captured[0]
+        assert payload["temperature"] == 0
+        assert payload["top_p"] == 1
+        assert payload.get("seed") is not None
+
+
+class TestBalancedMode:
+    def test_suggest_meal_balanced_mode_true_near_goal(self, monkeypatch):
+        captured = []
+
+        def _post(url, headers=None, json=None, timeout=None):
+            captured.append(json)
+            # Return a minimal valid suggestion array
+            content = '[{"mealName":"Balanced bowl","servingSize":{"qty":1,"unit":"bowl","grams":400},"ingredients":"X","category":"Other","macros":{"calories":400,"protein":20,"carbohydrates":{"total":45,"net":40,"fiber":5,"sugar":6,"addedSugar":0,"sugarAlcohols":0,"allulose":0},"fat":{"total":12,"saturated":3,"monounsaturated":6,"polyunsaturated":2,"omega3":0.3,"omega6":0.7,"cholesterol":10}},"micronutrients":[]}]'
+            return FakeResponse({"choices": [{"message": {"content": content}}]})
+
+        monkeypatch.setattr('app.requests.post', _post)
+
+        # Build meals so remaining protein is small (trigger balanced)
+        meals = [create_sample_meal("Meal A", 70.0, 500), create_sample_meal("Meal B", 40.0, 600)]
+        body = {
+            "todays_meals": [m.model_dump() for m in meals],
+            "daily_protein_goal": 120.0
+        }
+
+        resp = client.post("/suggest-meal", json=body)
+        assert resp.status_code == 200
+        # Verify we set balanced mode in prompt
+        sent = captured[0]
+        assert sent["temperature"] == 0
+        assert sent["top_p"] == 1
+        content = sent["messages"][1]["content"]
+        assert "BALANCED MODE: true" in content
+        assert "TARGET PROTEIN FOR THIS MEAL" in content
+
+    def test_suggest_meal_balanced_mode_false_far_from_goal(self, monkeypatch):
+        captured = []
+
+        def _post(url, headers=None, json=None, timeout=None):
+            captured.append(json)
+            content = '[{"mealName":"Protein plate","servingSize":{"qty":1,"unit":"plate","grams":450},"ingredients":"X","category":"Other","macros":{"calories":600,"protein":40,"carbohydrates":{"total":50,"net":45,"fiber":5,"sugar":6,"addedSugar":0,"sugarAlcohols":0,"allulose":0},"fat":{"total":20,"saturated":5,"monounsaturated":10,"polyunsaturated":3,"omega3":0.5,"omega6":1.5,"cholesterol":90}},"micronutrients":[]}]'
+            return FakeResponse({"choices": [{"message": {"content": content}}]})
+
+        monkeypatch.setattr('app.requests.post', _post)
+
+        # No meals consumed: far from goal
+        body = {"todays_meals": [], "daily_protein_goal": 120.0}
+        resp = client.post("/suggest-meal", json=body)
+        assert resp.status_code == 200
+
+        sent = captured[0]
+        content = sent["messages"][1]["content"]
+        assert "BALANCED MODE: false" in content
+
+
+class TestNormalizationLogic:
+    def test_calories_recomputed_via_449(self, monkeypatch):
+        # Protein 20, carbs.total 30, fat.total 10 => calories = 4*(20+30)+9*10 = 290
+        def _post(url, headers=None, json=None, timeout=None):
+            content = '[{"mealName":"X","servingSize":{"qty":1,"unit":"plate","grams":300},"ingredients":"X","category":"Other","macros":{"calories":999,"protein":20,"carbohydrates":{"total":30,"net":28,"fiber":2,"sugar":4,"addedSugar":0,"sugarAlcohols":0,"allulose":0},"fat":{"total":10,"saturated":2,"monounsaturated":4,"polyunsaturated":3,"omega3":0.3,"omega6":0.7,"cholesterol":0}},"micronutrients":[]}]'
+            return FakeResponse({"choices": [{"message": {"content": content}}]})
+
+        monkeypatch.setattr('app.requests.post', _post)
+        body = {"transcription": "I had a meal"}
+        resp = client.post("/analyze-transcription", json=body)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["macros"]["calories"] == 290

@@ -69,10 +69,41 @@ async def log_requests(
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 API_URL = os.getenv("API_URL", "https://api.openai.com/v1/chat/completions")
 MODEL = os.getenv("MODEL", "gpt-4.1")
+DETERMINISTIC = os.getenv("DETERMINISTIC", "1").strip() not in ("0", "false", "False")
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "86400"))  # default 24h
+CACHE_MAX_ITEMS = int(os.getenv("CACHE_MAX_ITEMS", "256"))
 
 # Validate required environment variables
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY environment variable is required. Please set it in your .env file.")
+
+# -------------------- SIMPLE TTL LRU CACHE --------------------
+_cache_store: Dict[str, Any] = {}
+_cache_meta: Dict[str, float] = {}
+
+def _cache_get(key: str) -> Optional[Any]:
+    now = time.time()
+    ts = _cache_meta.get(key)
+    if ts is None:
+        return None
+    if now - ts > CACHE_TTL_SECONDS:
+        # expired
+        _cache_store.pop(key, None)
+        _cache_meta.pop(key, None)
+        return None
+    return _cache_store.get(key)
+
+def _cache_set(key: str, value: Any) -> None:
+    # LRU-ish eviction: if too big, drop oldest entries
+    _cache_store[key] = value
+    _cache_meta[key] = time.time()
+    if len(_cache_store) > CACHE_MAX_ITEMS:
+        # evict the oldest ~10% to avoid O(n) every time
+        to_evict = max(1, CACHE_MAX_ITEMS // 10)
+        oldest = sorted(_cache_meta.items(), key=lambda kv: kv[1])[:to_evict]
+        for k, _ in oldest:
+            _cache_store.pop(k, None)
+            _cache_meta.pop(k, None)
 
 # -------------------- SYSTEM & USER PROMPTS --------------------
 
@@ -487,6 +518,11 @@ SUGGESTION CRITERIA:
 - Consider the time of day and meal type appropriateness
 - Encourage novelty: avoid repeating the same meal names as earlier in the day; propose a new or slightly different meal each time
 
+BALANCED MODE (IMPORTANT):
+- If the user prompt includes "BALANCED MODE: true", prefer a balanced meal with moderate protein rather than maximizing protein.
+- Target protein range: 10–30g for this meal; include meaningful carbohydrates, fiber-rich vegetables/fruit, and healthy fats.
+- Avoid excessively high-protein options if the daily protein goal is nearly met; prioritize overall dietary balance and satiety.
+
 OUTPUT FORMAT (STRICT):
 Return ONLY a JSON ARRAY with ONE meal object (same format as transcription analysis):
 ```json
@@ -570,6 +606,9 @@ CRITICAL REQUIREMENTS:
 - Return as a JSON ARRAY with ONE meal object using the exact same structure as transcription analysis
 
 Current time context: {current_time}
+
+BALANCED MODE: {balanced_mode}
+If true, prefer a balanced, moderate-protein meal (10–30g protein) with wholesome carbs, vegetables, and healthy fats. Avoid over-optimizing protein if today's goal is nearly met.
 """.strip()
 
 # -------------------- JSON MODELS --------------------
@@ -854,13 +893,21 @@ def _compress_image_to_data_url(image_bytes: bytes, preferred_mime: Optional[str
 
 def analyze_image(image_url: str) -> List[Dict[str, Any]]:
     logger.info("Analyzing image via OpenAI vision model")
+    # Cache key includes prompt type, model, image identifier, and determinism flag
+    cache_key = f"image::{MODEL}::{DETERMINISTIC}::{hash(image_url)}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        logger.info("Cache hit for analyze_image")
+        return cached
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENAI_API_KEY}",
     }
     data = {
         "model": MODEL,
-        "temperature": 0,
+        "temperature": 0 if DETERMINISTIC else 0.2,
+        "top_p": 1,
+        "seed": 7 if DETERMINISTIC else None,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT_IMAGE},
             {
@@ -909,18 +956,28 @@ def analyze_image(image_url: str) -> List[Dict[str, Any]]:
     # Use robust extractor
     meals = _extract_meals_from_content(content)
     meals = _normalize_meals(meals)
+    _cache_set(cache_key, meals)
 
     return meals
 
 def analyze_transcription(transcription: str) -> List[Dict[str, Any]]:
     logger.info("Analyzing transcription via OpenAI text model")
+    # Normalize whitespace for stable keying
+    trans_norm = re.sub(r"\s+", " ", transcription.strip())
+    cache_key = f"transcription::{MODEL}::{DETERMINISTIC}::{hash(trans_norm)}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        logger.info("Cache hit for analyze_transcription")
+        return cached
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENAI_API_KEY}"
     }
     payload = {
         "model": MODEL,
-        "temperature": 0.1,
+        "temperature": 0 if DETERMINISTIC else 0.1,
+        "top_p": 1,
+        "seed": 11 if DETERMINISTIC else None,
         # "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT_TRANSCRIPTION},
@@ -945,6 +1002,7 @@ def analyze_transcription(transcription: str) -> List[Dict[str, Any]]:
         # Use the same robust extractor as image to handle arrays/wrappers/codefences
         meals = _extract_meals_from_content(content)
         meals = _normalize_meals(meals)
+        _cache_set(cache_key, meals)
         return meals
             
     except Exception as e:
@@ -982,35 +1040,51 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
         time_context = "late evening (snack time)"
         meals_remaining = 1  # snack/late meal
 
+    # Determine balanced mode:
+    # Enable when remaining protein is small relative to goal (<= 20% of goal or <= 15g)
+    rel_remaining = (remaining_protein / daily_protein_goal) if daily_protein_goal > 0 else 0
+    balanced_mode = (remaining_protein <= 15.0) or (rel_remaining <= 0.20)
+
     # Compute dynamic protein target for this meal
-    # Aim to distribute remaining protein across remaining meals, but clamp to reasonable bounds
-    base_target = remaining_protein / max(meals_remaining, 1)
-    # Clamp target between 15g and 60g
-    target_protein_for_this_meal = round(min(max(base_target, 15.0), 60.0), 1)
+    # If balanced mode, steer toward moderate protein; otherwise distribute remaining across meals
+    if balanced_mode:
+        # Prefer moderate protein band 10–30g
+        target_protein_for_this_meal = 20.0 if meals_remaining <= 1 else 18.0
+    else:
+        base_target = remaining_protein / max(meals_remaining, 1)
+        target_protein_for_this_meal = round(min(max(base_target, 15.0), 60.0), 1)
     
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENAI_API_KEY}"
     }
     
+    user_prompt_rendered = USER_PROMPT_MEAL_SUGGESTION.format(
+        daily_protein_goal=round(daily_protein_goal, 1),
+        total_protein_consumed=round(total_protein_consumed, 1),
+        remaining_protein=round(remaining_protein, 1),
+        meals_remaining=meals_remaining,
+        target_protein_for_this_meal=target_protein_for_this_meal,
+        todays_meals_summary=todays_meals_text,
+        current_time=time_context,
+        balanced_mode=str(balanced_mode).lower()
+    )
+
+    # Cache by the rendered prompt inputs
+    cache_key = f"suggest::{MODEL}::{DETERMINISTIC}::{hash(user_prompt_rendered)}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        logger.info("Cache hit for suggest_meal")
+        return cached
+
     payload = {
         "model": MODEL,
-        # Slightly higher temperature to encourage small variations while keeping structure
-        "temperature": 0.5,
+        "temperature": 0 if DETERMINISTIC else 0.5,
+        "top_p": 1,
+        "seed": 23 if DETERMINISTIC else None,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT_MEAL_SUGGESTION},
-            {
-                "role": "user", 
-                "content": USER_PROMPT_MEAL_SUGGESTION.format(
-                    daily_protein_goal=round(daily_protein_goal, 1),
-                    total_protein_consumed=round(total_protein_consumed, 1),
-                    remaining_protein=round(remaining_protein, 1),
-                    meals_remaining=meals_remaining,
-                    target_protein_for_this_meal=target_protein_for_this_meal,
-                    todays_meals_summary=todays_meals_text,
-                    current_time=time_context
-                )
-            },
+            {"role": "user", "content": user_prompt_rendered},
         ],
     }
 
@@ -1028,6 +1102,7 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
         # Use the same robust extractor as transcription to handle arrays/wrappers/codefences
         meals = _extract_meals_from_content(content)
         meals = _normalize_meals(meals)
+        _cache_set(cache_key, meals)
         return meals
             
     except requests.exceptions.RequestException as e:
