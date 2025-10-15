@@ -70,6 +70,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 API_URL = os.getenv("API_URL", "https://api.openai.com/v1/chat/completions")
 MODEL = os.getenv("MODEL", "gpt-4.1")
 DETERMINISTIC = os.getenv("DETERMINISTIC", "1").strip() not in ("0", "false", "False")
+# Suggest-meal specific determinism (default off to encourage variety)
+SUGGEST_MEAL_DETERMINISTIC = os.getenv("SUGGEST_MEAL_DETERMINISTIC", "0").strip() not in ("0", "false", "False")
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "86400"))  # default 24h
 CACHE_MAX_ITEMS = int(os.getenv("CACHE_MAX_ITEMS", "256"))
 
@@ -1053,6 +1055,16 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
     else:
         base_target = remaining_protein / max(meals_remaining, 1)
         target_protein_for_this_meal = round(min(max(base_target, 15.0), 60.0), 1)
+    # Log computed context for suggestion
+    logger.info(
+        "SuggestMeal ctx: goal=%s, consumed=%s, remaining=%s, meals_remaining=%s, balanced=%s, target=%s",
+        round(daily_protein_goal, 1),
+        round(total_protein_consumed, 1),
+        round(remaining_protein, 1),
+        meals_remaining,
+        balanced_mode,
+        target_protein_for_this_meal,
+    )
     
     headers = {
         "Content-Type": "application/json",
@@ -1070,23 +1082,37 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
         balanced_mode=str(balanced_mode).lower()
     )
 
-    # Cache by the rendered prompt inputs
-    cache_key = f"suggest::{MODEL}::{DETERMINISTIC}::{hash(user_prompt_rendered)}"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        logger.info("Cache hit for suggest_meal")
-        return cached
+    # Inject a nonce to promote variety when non-deterministic; model must not echo it
+    sm_deterministic = SUGGEST_MEAL_DETERMINISTIC
+    if not sm_deterministic:
+        nonce = int(time.time() * 1000) % 1_000_000
+        user_prompt_rendered += f"\nVARIATION NONCE: {nonce} (do not include this in output)"
+
+    # Cache only when deterministic to ensure repeatability; skip cache for variability
+    cache_key = None
+    if sm_deterministic:
+        cache_key = f"suggest::{MODEL}::{DETERMINISTIC}::{hash(user_prompt_rendered)}"
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            logger.info("Cache hit for suggest_meal")
+            return cached
 
     payload = {
         "model": MODEL,
-        "temperature": 0 if DETERMINISTIC else 0.5,
-        "top_p": 1,
-        "seed": 23 if DETERMINISTIC else None,
+        "temperature": 0 if sm_deterministic else 0.8,
+        "top_p": 1 if sm_deterministic else 0.95,
+        "seed": 23 if sm_deterministic else None,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT_MEAL_SUGGESTION},
             {"role": "user", "content": user_prompt_rendered},
         ],
     }
+    logger.info(
+        "SuggestMeal params: deterministic=%s, temperature=%s, top_p=%s",
+        sm_deterministic,
+        payload["temperature"],
+        payload["top_p"],
+    )
 
     try:
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
@@ -1102,7 +1128,21 @@ def suggest_meal(todays_meals: List[MealTRANSCRIPTION], daily_protein_goal: floa
         # Use the same robust extractor as transcription to handle arrays/wrappers/codefences
         meals = _extract_meals_from_content(content)
         meals = _normalize_meals(meals)
-        _cache_set(cache_key, meals)
+        # Log brief summary of first suggested meal
+        try:
+            first = meals[0] if meals else None
+            if first:
+                macros = first.get("macros", {})
+                logger.info(
+                    "SuggestMeal result: %s | protein=%sg | calories=%s",
+                    first.get("mealName", "<unknown>"),
+                    macros.get("protein"),
+                    macros.get("calories"),
+                )
+        except Exception:
+            pass
+        if sm_deterministic and cache_key is not None:
+            _cache_set(cache_key, meals)
         return meals
             
     except requests.exceptions.RequestException as e:
